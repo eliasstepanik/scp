@@ -1,0 +1,19 @@
+[package]
+name = "scp-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+scp-core = { path = "../crates/scp-core" }
+scp-transport = { path = "../crates/scp-transport" }
+
+[[bin]]
+name = "mock-mcp-server"
+path = "src/bin/mock_server.rs"
+
+[[test]]
+name = "passthrough"
+path = "tests/passthrough.rs"
