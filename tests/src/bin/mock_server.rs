@@ -84,7 +84,10 @@ fn handle_request(stdout: &mut std::io::Stdout, req: &JsonRpcRequest) {
             )
         }
         "tools/call" => {
-            let args = req.params.clone().unwrap_or(Value::Object(Default::default()));
+            let args = req
+                .params
+                .clone()
+                .unwrap_or(Value::Object(Default::default()));
             let args_str = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
             let result = CallToolResult {
                 content: vec![ToolContent::Text { text: args_str }],
@@ -95,10 +98,7 @@ fn handle_request(stdout: &mut std::io::Stdout, req: &JsonRpcRequest) {
                 serde_json::to_value(&result).unwrap(),
             )
         }
-        "ping" => JsonRpcResponse::success(
-            req.id.clone().unwrap_or(RequestId::Null),
-            json!({}),
-        ),
+        "ping" => JsonRpcResponse::success(req.id.clone().unwrap_or(RequestId::Null), json!({})),
         _ => {
             let error = scp_core::protocol::JsonRpcError::new(
                 scp_core::protocol::JsonRpcError::METHOD_NOT_FOUND,

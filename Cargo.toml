@@ -23,3 +23,7 @@ clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 hex = "0.4"
 tokio-test = "0.4"
+toml = "0.8"
+regex = "1.10"
+axum = { version = "0.7", features = ["tokio", "json"] }
+reqwest = { version = "0.12", features = ["json"] }

@@ -1,1 +1,3 @@
-// Stub for Phase 0
+pub mod registry;
+
+pub use registry::{RegistryError, ToolEntry, ToolRegistry};

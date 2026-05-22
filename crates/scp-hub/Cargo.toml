@@ -17,8 +17,13 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 clap = { workspace = true }
 uuid = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
 scp-core = { path = "../scp-core" }
 scp-transport = { path = "../scp-transport" }
+scp-pool = { path = "../scp-pool" }
+scp-index = { path = "../scp-index" }
+scp-filter = { path = "../scp-filter" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

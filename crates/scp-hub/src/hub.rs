@@ -11,9 +11,11 @@ use scp_transport::stdio_server::StdioServerTransport;
 use serde_json::{json, Value};
 use tracing::{debug, error, info, warn};
 
+#[allow(dead_code)]
 const PROTOCOL_VERSION: &str = "2025-03-26";
 
 /// Initialize the backend server
+#[allow(dead_code)]
 pub async fn initialize_backend(
     transport: &mut StdioServerTransport,
     _client_params: &InitializeParams,
@@ -65,6 +67,7 @@ pub async fn initialize_backend(
 }
 
 /// Handle client initialize request
+#[allow(dead_code)]
 pub async fn handle_client_initialize(
     client: &mut StdioClientTransport,
     backend_caps: &ServerCapabilities,
@@ -142,6 +145,7 @@ pub async fn handle_client_initialize(
 }
 
 /// Main proxy loop
+#[allow(dead_code)]
 pub async fn run_proxy(
     client: &mut StdioClientTransport,
     backend: &mut StdioServerTransport,
