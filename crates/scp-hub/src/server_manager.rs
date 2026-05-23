@@ -6,29 +6,37 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::info;
 
-/// Server manager error types
+/// Server manager error types.
 #[derive(Debug, Error)]
 #[allow(dead_code)]
 pub enum ManagerError {
+    /// Server not found.
     #[error("Server not found: {0}")]
     ServerNotFound(String),
 
+    /// Server already exists.
     #[error("Server already exists: {0}")]
     ServerAlreadyExists(String),
 
+    /// Pool error.
     #[error("Pool error: {0}")]
     PoolError(String),
 
+    /// Invalid configuration.
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 }
 
-/// Server status information
+/// Server status information.
 #[derive(Debug, Clone)]
 pub struct ServerStatus {
+    /// Server name.
     pub name: String,
+    /// Server state.
     pub state: ServerState,
+    /// Number of tools provided by this server.
     pub tool_count: usize,
+    /// Whether the server is enabled.
     pub enabled: bool,
 }
 

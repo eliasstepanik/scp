@@ -1,45 +1,66 @@
 #![allow(unused_imports)]
 
 use crate::server_manager::{ServerManager, ServerStatus};
+use crate::session_store::{SessionStore, SessionSummary};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post, put},
     Json, Router,
 };
 use scp_core::config::ServerConfig;
-use serde::Serialize;
+use scp_index::ToolRegistry;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::info;
 
-/// Admin API state
+/// Admin API state.
 #[derive(Clone)]
 pub struct AdminState {
+    /// Server manager.
     pub server_manager: ServerManager,
+    /// Optional authentication token.
     #[allow(dead_code)]
     pub auth_token: Option<String>,
+    /// Optional session store.
+    pub session_store: Option<Arc<SessionStore>>,
+    /// Optional tool registry.
+    pub tool_registry: Option<Arc<RwLock<ToolRegistry>>>,
 }
 
-/// Health response
+/// Health response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
+    /// Overall status.
     pub status: String,
+    /// Total number of servers.
     pub servers: usize,
+    /// Number of healthy servers.
     pub healthy: usize,
+    /// Number of active sessions.
+    pub sessions: usize,
 }
 
-/// Server list response
+/// Server list response.
 #[derive(Debug, Serialize)]
 pub struct ServerListResponse {
+    /// List of server statuses.
     pub servers: Vec<ServerStatusResponse>,
 }
 
-/// Server status response
+/// Server status response.
 #[derive(Debug, Serialize)]
 pub struct ServerStatusResponse {
+    /// Server name.
     pub name: String,
+    /// Server state.
     pub state: String,
+    /// Number of tools provided by this server.
     pub tool_count: usize,
+    /// Whether the server is enabled.
     pub enabled: bool,
 }
 
@@ -52,6 +73,23 @@ impl From<ServerStatus> for ServerStatusResponse {
             enabled: status.enabled,
         }
     }
+}
+
+/// Tool info response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ToolInfo {
+    /// Qualified tool name.
+    pub qualified_name: String,
+    /// Server providing the tool.
+    pub server: String,
+    /// Tool name.
+    pub name: String,
+    /// Tool description.
+    pub description: String,
+    /// Tool tags.
+    pub tags: Vec<String>,
+    /// Number of times the tool has been called.
+    pub call_count: u64,
 }
 
 /// Create admin API router
@@ -69,6 +107,11 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/servers/:name/disable", post(disable_server_handler))
         .route("/servers/:name/enable", post(enable_server_handler))
         .route("/config/reload", post(reload_config_handler))
+        .route("/admin/sessions", get(list_sessions_handler))
+        .route("/admin/sessions/:id", delete(delete_session_handler))
+        .route("/tools", get(list_tools_handler))
+        .route("/admin/metrics", get(metrics_handler))
+        .route("/metrics", get(prometheus_metrics_handler))
         .with_state(state)
 }
 
@@ -76,11 +119,35 @@ pub fn create_admin_router(state: AdminState) -> Router {
 async fn health_handler(State(state): State<AdminState>) -> impl IntoResponse {
     let servers = state.server_manager.list_servers().await;
     let healthy = servers.iter().filter(|s| s.enabled).count();
+    let total_servers = servers.len();
+
+    // Determine status based on server health
+    let status = if total_servers == 0 {
+        // No servers configured, consider healthy
+        "ok".to_string()
+    } else if healthy == total_servers {
+        // All servers healthy
+        "ok".to_string()
+    } else if healthy > 0 {
+        // Some servers healthy, some down
+        "degraded".to_string()
+    } else {
+        // All servers down
+        "error".to_string()
+    };
+
+    // Get session count
+    let sessions = if let Some(session_store) = &state.session_store {
+        session_store.list().await.len()
+    } else {
+        0
+    };
 
     Json(HealthResponse {
-        status: "ok".to_string(),
-        servers: servers.len(),
+        status,
+        servers: total_servers,
         healthy,
+        sessions,
     })
 }
 
@@ -182,7 +249,135 @@ async fn reload_config_handler(State(_state): State<AdminState>) -> impl IntoRes
     )
 }
 
+/// GET /admin/sessions (P2.L)
+async fn list_sessions_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    if let Some(session_store) = &state.session_store {
+        let sessions = session_store.list().await;
+        Json(serde_json::json!({
+            "sessions": sessions
+        }))
+    } else {
+        Json(serde_json::json!({
+            "sessions": []
+        }))
+    }
+}
+
+/// DELETE /admin/sessions/:id (P2.L)
+async fn delete_session_handler(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(session_store) = &state.session_store {
+        if session_store.remove(&id).await {
+            (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Session not found"})),
+            )
+                .into_response()
+        }
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Session store not available"})),
+        )
+            .into_response()
+    }
+}
+
+/// GET /admin/metrics (JSON format)
+async fn metrics_handler() -> impl IntoResponse {
+    let errors_total = serde_json::json!({
+        "tool_not_found": crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["tool_not_found"]).get(),
+        "server_not_found": crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["server_not_found"]).get(),
+        "pool_error": crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["pool_error"]).get(),
+        "invalid_request": crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["invalid_request"]).get(),
+        "rate_limited": crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["rate_limited"]).get(),
+    });
+
+    let request_duration = serde_json::json!({
+        "count": crate::metrics::SCP_REQUEST_DURATION_SECONDS.get_sample_count(),
+        "sum": crate::metrics::SCP_REQUEST_DURATION_SECONDS.get_sample_sum(),
+    });
+
+    Json(serde_json::json!({
+        "tokens_saved_total": crate::metrics::SCP_TOKENS_SAVED_TOTAL.get(),
+        "tokens_delivered_total": crate::metrics::SCP_TOKENS_DELIVERED_TOTAL.get(),
+        "embedding_fallback_total": crate::metrics::SCP_EMBEDDING_FALLBACK_TOTAL.get(),
+        "errors_total": errors_total,
+        "pool_connections_active": crate::metrics::SCP_POOL_CONNECTIONS_ACTIVE.get(),
+        "inflight_requests": crate::metrics::SCP_INFLIGHT_REQUESTS.get(),
+        "request_duration_seconds": request_duration,
+    }))
+}
+
+/// GET /metrics (Prometheus text format)
+async fn prometheus_metrics_handler() -> impl IntoResponse {
+    let body = crate::metrics::gather_metrics();
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+}
+
+/// GET /tools (P3.J)
+async fn list_tools_handler(
+    State(state): State<AdminState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(registry) = &state.tool_registry {
+        let registry = registry.read().await;
+        let query = params.get("q").map(|s| s.to_lowercase());
+
+        let tools: Vec<ToolInfo> = registry
+            .all_tools()
+            .into_iter()
+            .filter(|entry| {
+                if let Some(q) = &query {
+                    entry.original_name.to_lowercase().contains(q)
+                        || entry
+                            .description
+                            .as_ref()
+                            .map(|d| d.to_lowercase().contains(q))
+                            .unwrap_or(false)
+                } else {
+                    true
+                }
+            })
+            .map(|entry| {
+                let (server, name) = if let Some(pos) = entry.qualified_name.find('.') {
+                    (
+                        entry.qualified_name[..pos].to_string(),
+                        entry.qualified_name[pos + 1..].to_string(),
+                    )
+                } else {
+                    (String::new(), entry.qualified_name.clone())
+                };
+
+                ToolInfo {
+                    qualified_name: entry.qualified_name.clone(),
+                    server,
+                    name,
+                    description: entry.description.clone().unwrap_or_default(),
+                    tags: entry.tags.clone(),
+                    call_count: entry.call_count,
+                }
+            })
+            .collect();
+
+        Json(tools)
+    } else {
+        Json(Vec::<ToolInfo>::new())
+    }
+}
+
 /// Start admin API server
+#[allow(dead_code)]
 pub async fn start_admin_api(
     listen_addr: &str,
     listen_port: u16,
@@ -196,4 +391,237 @@ pub async fn start_admin_api(
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Start the admin API with a shutdown signal.
+pub async fn start_admin_api_with_shutdown<F>(
+    listen_addr: &str,
+    listen_port: u16,
+    state: AdminState,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let app = create_admin_router(state);
+    let addr = format!("{}:{}", listen_addr, listen_port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    info!("Admin API listening on {}", addr);
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scp_index::ToolEntry;
+
+    fn create_test_tool(name: &str, description: &str) -> ToolEntry {
+        ToolEntry {
+            original_name: name.to_string(),
+            qualified_name: String::new(), // Will be set by register_tools
+            server_name: String::new(),
+            description: Some(description.to_string()),
+            input_schema: serde_json::json!({}),
+            tags: vec!["test".to_string()],
+            avg_response_tokens: 100.0,
+            call_count: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_empty() {
+        let state = AdminState {
+            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            auth_token: None,
+            session_store: None,
+            tool_registry: None,
+        };
+
+        let params = HashMap::new();
+        let response = list_tools_handler(State(state), Query(params)).await;
+        let body = response.into_response().into_body();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let tools: Vec<ToolInfo> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(tools.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_with_registry() {
+        let mut registry = ToolRegistry::new();
+        let tools = vec![
+            create_test_tool("read_file", "Read a file from the filesystem"),
+            create_test_tool("write_file", "Write a file to the filesystem"),
+            create_test_tool("search", "Search for files"),
+        ];
+        registry.register_tools("fs", tools);
+
+        let state = AdminState {
+            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            auth_token: None,
+            session_store: None,
+            tool_registry: Some(Arc::new(RwLock::new(registry))),
+        };
+
+        let params = HashMap::new();
+        let response = list_tools_handler(State(state), Query(params)).await;
+        let body = response.into_response().into_body();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let tools: Vec<ToolInfo> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(tools.len(), 3);
+        assert!(tools.iter().any(|t| t.name == "read_file"));
+        assert!(tools.iter().any(|t| t.name == "write_file"));
+        assert!(tools.iter().any(|t| t.name == "search"));
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_with_filter() {
+        let mut registry = ToolRegistry::new();
+        let tools = vec![
+            create_test_tool("read_file", "Read a file from the filesystem"),
+            create_test_tool("write_file", "Write a file to the filesystem"),
+            create_test_tool("search", "Search for documents"),
+        ];
+        registry.register_tools("fs", tools);
+
+        let state = AdminState {
+            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            auth_token: None,
+            session_store: None,
+            tool_registry: Some(Arc::new(RwLock::new(registry))),
+        };
+
+        let mut params = HashMap::new();
+        params.insert("q".to_string(), "file".to_string());
+        let response = list_tools_handler(State(state), Query(params)).await;
+        let body = response.into_response().into_body();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let tools: Vec<ToolInfo> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().any(|t| t.name == "read_file"));
+        assert!(tools.iter().any(|t| t.name == "write_file"));
+        assert!(!tools.iter().any(|t| t.name == "search"));
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_filter_by_description() {
+        let mut registry = ToolRegistry::new();
+        let tools = vec![
+            create_test_tool("read_file", "Read a file from the filesystem"),
+            create_test_tool("write_file", "Write a file to the filesystem"),
+            create_test_tool("search", "Search for files"),
+        ];
+        registry.register_tools("fs", tools);
+
+        let state = AdminState {
+            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            auth_token: None,
+            session_store: None,
+            tool_registry: Some(Arc::new(RwLock::new(registry))),
+        };
+
+        let mut params = HashMap::new();
+        params.insert("q".to_string(), "filesystem".to_string());
+        let response = list_tools_handler(State(state), Query(params)).await;
+        let body = response.into_response().into_body();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let tools: Vec<ToolInfo> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().any(|t| t.name == "read_file"));
+        assert!(tools.iter().any(|t| t.name == "write_file"));
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_case_insensitive_filter() {
+        let mut registry = ToolRegistry::new();
+        let tools = vec![
+            create_test_tool("read_file", "Read a file from the filesystem"),
+            create_test_tool("write_file", "Write a file to the filesystem"),
+            create_test_tool("search", "Search for documents"),
+        ];
+        registry.register_tools("fs", tools);
+
+        let state = AdminState {
+            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            auth_token: None,
+            session_store: None,
+            tool_registry: Some(Arc::new(RwLock::new(registry))),
+        };
+
+        let mut params = HashMap::new();
+        params.insert("q".to_string(), "FILE".to_string());
+        let response = list_tools_handler(State(state), Query(params)).await;
+        let body = response.into_response().into_body();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let tools: Vec<ToolInfo> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().any(|t| t.name == "read_file"));
+        assert!(tools.iter().any(|t| t.name == "write_file"));
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_metrics_endpoint() {
+        // Increment one of the error counters to ensure it appears in output
+        crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["test"]).inc();
+        let metrics_output = crate::metrics::gather_metrics();
+        
+        assert!(metrics_output.contains("scp_tokens_saved_total"));
+        assert!(metrics_output.contains("scp_tokens_delivered_total"));
+        assert!(metrics_output.contains("scp_embedding_fallback_total"));
+        assert!(metrics_output.contains("scp_request_duration_seconds"));
+        assert!(metrics_output.contains("scp_errors_total"));
+        assert!(metrics_output.contains("scp_pool_connections_active"));
+    }
+
+    #[tokio::test]
+    async fn test_health_response_has_sessions() {
+        let response = HealthResponse {
+            status: "ok".to_string(),
+            servers: 2,
+            healthy: 2,
+            sessions: 3,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("sessions"));
+        assert!(json.contains("\"sessions\":3"));
+    }
+
+    #[tokio::test]
+    async fn test_admin_metrics_extended() {
+        let response = metrics_handler().await;
+        let body = response.into_response().into_body();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let metrics: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Verify all required fields are present
+        assert!(metrics.get("tokens_saved_total").is_some());
+        assert!(metrics.get("tokens_delivered_total").is_some());
+        assert!(metrics.get("embedding_fallback_total").is_some());
+        assert!(metrics.get("errors_total").is_some());
+        assert!(metrics.get("pool_connections_active").is_some());
+        assert!(metrics.get("inflight_requests").is_some());
+        assert!(metrics.get("request_duration_seconds").is_some());
+
+        // Verify errors_total has all error kinds
+        let errors = metrics.get("errors_total").unwrap();
+        assert!(errors.get("tool_not_found").is_some());
+        assert!(errors.get("server_not_found").is_some());
+        assert!(errors.get("pool_error").is_some());
+        assert!(errors.get("invalid_request").is_some());
+        assert!(errors.get("rate_limited").is_some());
+
+        // Verify request_duration_seconds has count and sum
+        let duration = metrics.get("request_duration_seconds").unwrap();
+        assert!(duration.get("count").is_some());
+        assert!(duration.get("sum").is_some());
+    }
 }

@@ -1,16 +1,23 @@
 mod admin;
+mod extension_tools;
 mod hub;
+mod listener;
 mod reload;
 mod router;
 mod server_manager;
+mod session_store;
+mod tool_cache;
 mod tracing_setup;
+mod metrics;
 
-use admin::{start_admin_api, AdminState};
+use admin::{start_admin_api_with_shutdown, AdminState};
 use anyhow::Result;
 use clap::Parser;
+use listener::{run_stdio_client, ClientListener};
 use scp_core::config::load_config;
 use scp_index::ToolRegistry;
 use scp_pool::PoolManager;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -31,6 +38,33 @@ struct Args {
     /// Log level: trace, debug, info, warn, error
     #[arg(long, default_value = "info")]
     log_level: String,
+}
+
+/// Signal handler for graceful shutdown
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("Shutdown signal received, draining in-flight requests...");
 }
 
 #[tokio::main]
@@ -64,6 +98,12 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Re-initialize tracing from config if it differs from CLI args
+    // This allows config file to override CLI args
+    if config.logging.json_format != (args.log_format == "json") || config.logging.level != args.log_level {
+        tracing_setup::init_tracing_from_config(&config.logging);
+    }
+
     info!("Config loaded from {:?}", args.config);
     info!(
         "Hub listening on {}:{}",
@@ -90,24 +130,100 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Start admin API
+    // Create session store
+    let session_store = Arc::new(session_store::SessionStore::new(config.hub.session_timeout_secs as usize));
+
+    // Create router
+    let router = Arc::new(router::Router::new(
+        pool_manager.clone(),
+        tool_registry.clone(),
+        session_store.clone(),
+        config.hub.session_timeout_secs,
+        4000, // request_token_budget
+        config.hub.tool_cache_ttl_secs,
+        &config.filter,
+    ));
+
+    // Create a shared shutdown signal
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
+    // Start admin API with graceful shutdown
     let admin_state = AdminState {
         server_manager: server_manager.clone(),
         auth_token: config.admin.auth_token.clone(),
+        session_store: Some(session_store.clone()),
+        tool_registry: Some(tool_registry.clone()),
     };
 
     let admin_addr = config.admin.port;
-    tokio::spawn(async move {
-        if let Err(e) = start_admin_api("127.0.0.1", admin_addr, admin_state).await {
+    let admin_shutdown_rx = shutdown_rx.resubscribe();
+    let admin_handle = tokio::spawn(async move {
+        let shutdown = async {
+            let mut rx = admin_shutdown_rx;
+            let _ = rx.recv().await;
+        };
+        if let Err(e) = start_admin_api_with_shutdown("127.0.0.1", admin_addr, admin_state, shutdown).await {
             eprintln!("Admin API error: {}", e);
         }
     });
 
+    // Start HTTP client listener with graceful shutdown
+    let client_addr = SocketAddr::new(
+        config.hub.listen_address.parse().unwrap_or_else(|_| "127.0.0.1".parse().unwrap()),
+        config.hub.listen_port,
+    );
+    let client_listener = ClientListener::new(
+        client_addr,
+        session_store.clone(),
+        router.clone(),
+        config.hub.auth.clone(),
+    );
+    let client_shutdown_rx = shutdown_rx.resubscribe();
+    let client_handle = tokio::spawn(async move {
+        let shutdown = async {
+            let mut rx = client_shutdown_rx;
+            let _ = rx.recv().await;
+        };
+        if let Err(e) = client_listener.run_with_shutdown(shutdown).await {
+            eprintln!("HTTP client listener error: {}", e);
+        }
+    });
+
+    // Start stdio client listener if configured (P2.J)
+    let stdio_handle = if config.hub.transports.contains(&"stdio".to_string()) {
+        let session_store_clone = session_store.clone();
+        let router_clone = router.clone();
+        Some(tokio::spawn(async move {
+            if let Err(e) = run_stdio_client(session_store_clone, router_clone).await {
+                eprintln!("Stdio client error: {}", e);
+            }
+        }))
+    } else {
+        None
+    };
+
     info!("SCP Hub started successfully");
 
-    // Keep the hub running
-    tokio::signal::ctrl_c().await?;
-    info!("SCP Hub shutting down");
+    // Wait for shutdown signal
+    shutdown_signal().await;
+
+    // Broadcast shutdown signal to all servers
+    let _ = shutdown_tx.send(());
+
+    // Wait for all servers to shut down gracefully
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(config.hub.shutdown_timeout_secs),
+        async {
+            let _ = admin_handle.await;
+            let _ = client_handle.await;
+            if let Some(handle) = stdio_handle {
+                let _ = handle.await;
+            }
+        },
+    )
+    .await;
+
+    info!("SCP Hub shutdown complete");
 
     Ok(())
 }
