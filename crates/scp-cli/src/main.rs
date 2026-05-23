@@ -5,14 +5,17 @@ use serde_json::json;
 
 const ADMIN_API_URL: &str = "http://127.0.0.1:3101";
 
+/// SCP Hub CLI application.
 #[derive(Parser)]
 #[command(name = "scp")]
 #[command(about = "SCP Hub CLI v0.2.0")]
 struct Cli {
+    /// Subcommand to execute.
     #[command(subcommand)]
     command: Commands,
 }
 
+/// Top-level commands for the SCP Hub CLI.
 #[derive(Subcommand)]
 enum Commands {
     /// Start the SCP hub
@@ -35,14 +38,44 @@ enum Commands {
 
     /// Server management commands
     Servers {
+        /// Server subcommand to execute.
         #[command(subcommand)]
         command: ServerCommands,
+    },
+
+    /// Session management commands (P2.L)
+    Sessions {
+        /// Session subcommand to execute.
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
+
+    /// Tool management commands (P3.K)
+    Tools {
+        /// Tools subcommand to execute.
+        #[command(subcommand)]
+        command: ToolsCommands,
+    },
+
+    /// View metrics (P6.T8)
+    Metrics {
+        /// Admin API URL
+        #[arg(long, default_value = ADMIN_API_URL)]
+        admin_url: String,
+    },
+
+    /// View health status (P6.T8)
+    Health {
+        /// Admin API URL
+        #[arg(long, default_value = ADMIN_API_URL)]
+        admin_url: String,
     },
 
     /// Reload configuration
     Reload,
 }
 
+/// Server management subcommands.
 #[derive(Subcommand)]
 enum ServerCommands {
     /// List all servers
@@ -86,6 +119,40 @@ enum ServerCommands {
     Enable {
         /// Server name
         name: String,
+    },
+}
+
+/// Session management subcommands.
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// List all sessions
+    List,
+
+    /// Kill a session
+    Kill {
+        /// Session ID
+        id: String,
+    },
+}
+
+/// Tool management subcommands.
+#[derive(Subcommand)]
+enum ToolsCommands {
+    /// List all tools
+    List {
+        /// Admin API URL
+        #[arg(long, default_value = ADMIN_API_URL)]
+        admin_url: String,
+    },
+
+    /// Search for tools by keyword
+    Search {
+        /// Search keyword
+        keyword: String,
+
+        /// Admin API URL
+        #[arg(long, default_value = ADMIN_API_URL)]
+        admin_url: String,
     },
 }
 
@@ -230,6 +297,196 @@ async fn main() -> Result<()> {
                 }
             }
         },
+
+        Commands::Sessions { command } => match command {
+            SessionCommands::List => {
+                let client = Client::new();
+                let response = client
+                    .get(format!("{}/admin/sessions", ADMIN_API_URL))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let body = response.json::<serde_json::Value>().await?;
+                    println!("Sessions:");
+                    println!("{:<40} {:<15} {:<20} {:<20} {:<10}", "Session ID", "Profile", "Budget Remaining", "Last Active", "Tool Calls");
+                    println!("{}", "-".repeat(105));
+                    if let Some(sessions) = body["sessions"].as_array() {
+                        for session in sessions {
+                            let id = session["id"].as_str().unwrap_or("N/A");
+                            let profile = session.get("profile").and_then(|p| p.as_str()).unwrap_or("N/A");
+                            let budget = session["budget_remaining"].as_u64().unwrap_or(0);
+                            let last_active = session["last_active"].as_str().unwrap_or("N/A");
+                            let tool_calls = session["tool_call_count"].as_u64().unwrap_or(0);
+                            println!("{:<40} {:<15} {:<20} {:<20} {:<10}", id, profile, budget, last_active, tool_calls);
+                        }
+                    }
+                } else {
+                    eprintln!("Failed to list sessions: {}", response.status());
+                }
+            }
+
+            SessionCommands::Kill { id } => {
+                let client = Client::new();
+                let response = client
+                    .delete(format!("{}/admin/sessions/{}", ADMIN_API_URL, id))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    println!("Session '{}' killed successfully", id);
+                } else {
+                    eprintln!("Failed to kill session: {}", response.status());
+                }
+            }
+        },
+
+        Commands::Tools { command } => match command {
+            ToolsCommands::List { admin_url } => {
+                let client = Client::new();
+                let response = client
+                    .get(format!("{}/tools", admin_url))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let tools = response.json::<Vec<serde_json::Value>>().await?;
+                    if tools.is_empty() {
+                        println!("No tools registered.");
+                    } else {
+                        println!("Tools:");
+                        println!("{:<40} {:<20} {:<60} {:<10}", "qualified_name", "server", "description", "call_count");
+                        println!("{}", "-".repeat(130));
+                        for tool in tools {
+                            let qualified_name = tool["qualified_name"].as_str().unwrap_or("N/A");
+                            let server = tool["server"].as_str().unwrap_or("N/A");
+                            let description = tool["description"].as_str().unwrap_or("");
+                            let truncated_desc = if description.len() > 60 {
+                                format!("{}...", &description[..57])
+                            } else {
+                                description.to_string()
+                            };
+                            let call_count = tool["call_count"].as_u64().unwrap_or(0);
+                            println!("{:<40} {:<20} {:<60} {:<10}", qualified_name, server, truncated_desc, call_count);
+                        }
+                    }
+                } else {
+                    eprintln!("Failed to list tools: {}", response.status());
+                }
+            }
+
+            ToolsCommands::Search { keyword, admin_url } => {
+                let client = Client::new();
+                let response = client
+                    .get(format!("{}/tools?q={}", admin_url, urlencoding::encode(&keyword)))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let tools = response.json::<Vec<serde_json::Value>>().await?;
+                    if tools.is_empty() {
+                        println!("No tools found matching '{}'.", keyword);
+                    } else {
+                        println!("Tools matching '{}':", keyword);
+                        println!("{:<40} {:<20} {:<60} {:<10}", "qualified_name", "server", "description", "call_count");
+                        println!("{}", "-".repeat(130));
+                        for tool in tools {
+                            let qualified_name = tool["qualified_name"].as_str().unwrap_or("N/A");
+                            let server = tool["server"].as_str().unwrap_or("N/A");
+                            let description = tool["description"].as_str().unwrap_or("");
+                            let truncated_desc = if description.len() > 60 {
+                                format!("{}...", &description[..57])
+                            } else {
+                                description.to_string()
+                            };
+                            let call_count = tool["call_count"].as_u64().unwrap_or(0);
+                            println!("{:<40} {:<20} {:<60} {:<10}", qualified_name, server, truncated_desc, call_count);
+                        }
+                    }
+                } else {
+                    eprintln!("Failed to search tools: {}", response.status());
+                }
+            }
+        },
+
+        Commands::Metrics { admin_url } => {
+            let client = Client::new();
+            let response = client
+                .get(format!("{}/admin/metrics", admin_url))
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let metrics = response.json::<serde_json::Value>().await?;
+                
+                println!("{:<30} {:<15}", "Metric", "Value");
+                println!("{}", "-".repeat(45));
+                
+                // Print simple metrics
+                if let Some(val) = metrics.get("tokens_saved_total") {
+                    println!("{:<30} {:<15}", "tokens_saved_total", val);
+                }
+                if let Some(val) = metrics.get("tokens_delivered_total") {
+                    println!("{:<30} {:<15}", "tokens_delivered_total", val);
+                }
+                if let Some(val) = metrics.get("embedding_fallback_total") {
+                    println!("{:<30} {:<15}", "embedding_fallback_total", val);
+                }
+                if let Some(val) = metrics.get("pool_connections_active") {
+                    println!("{:<30} {:<15}", "pool_connections_active", val);
+                }
+                if let Some(val) = metrics.get("inflight_requests") {
+                    println!("{:<30} {:<15}", "inflight_requests", val);
+                }
+                
+                // Print error metrics
+                if let Some(errors) = metrics.get("errors_total").and_then(|e| e.as_object()) {
+                    for (kind, count) in errors {
+                        println!("{:<30} {:<15}", format!("errors.{}", kind), count);
+                    }
+                }
+                
+                // Print request duration metrics
+                if let Some(duration) = metrics.get("request_duration_seconds").and_then(|d| d.as_object()) {
+                    if let Some(count) = duration.get("count") {
+                        println!("{:<30} {:<15}", "request_duration_count", count);
+                    }
+                    if let Some(sum) = duration.get("sum") {
+                        println!("{:<30} {:<15}", "request_duration_sum", sum);
+                    }
+                }
+            } else {
+                eprintln!("Failed to get metrics: {}", response.status());
+            }
+        }
+
+        Commands::Health { admin_url } => {
+            let client = Client::new();
+            let response = client
+                .get(format!("{}/health", admin_url))
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let health = response.json::<serde_json::Value>().await?;
+                
+                let status = health.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+                let servers = health.get("servers").and_then(|s| s.as_u64()).unwrap_or(0);
+                let healthy = health.get("healthy").and_then(|h| h.as_u64()).unwrap_or(0);
+                let sessions = health.get("sessions").and_then(|s| s.as_u64()).unwrap_or(0);
+                
+                println!("Status: {}  Servers: {}/{}  Sessions: {}", status, healthy, servers, sessions);
+                
+                // Exit with appropriate code
+                match status {
+                    "ok" | "degraded" => std::process::exit(0),
+                    _ => std::process::exit(1),
+                }
+            } else {
+                eprintln!("Failed to get health status: {}", response.status());
+                std::process::exit(1);
+            }
+        }
 
         Commands::Reload => {
             let client = Client::new();
