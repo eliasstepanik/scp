@@ -8,11 +8,15 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tempfile = "3.8"
+uuid = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
 scp-core = { path = "../crates/scp-core" }
 scp-transport = { path = "../crates/scp-transport" }
 scp-pool = { path = "../crates/scp-pool" }
 scp-index = { path = "../crates/scp-index" }
 scp-filter = { path = "../crates/scp-filter" }
+scp-hub = { path = "../crates/scp-hub" }
 
 [[bin]]
 name = "mock-mcp-server"
