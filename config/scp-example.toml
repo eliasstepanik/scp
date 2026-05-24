@@ -1,0 +1,178 @@
+# SCP Hub Configuration Example
+# This is a well-commented example configuration file for Docker deployments.
+# Copy this to scp.toml and customize for your environment.
+
+# Configuration version (required, must be 1)
+config_version = 1
+
+# ============================================================================
+# Hub Configuration
+# ============================================================================
+[hub]
+# Listen address for the main SCP Hub server
+# Use "0.0.0.0" to listen on all interfaces (recommended for Docker)
+listen_address = "0.0.0.0"
+
+# Listen port for the main SCP Hub server
+listen_port = 3100
+
+# Supported transports: "stdio", "sse", "streamable_http"
+transports = ["stdio"]
+
+# Maximum number of concurrent client connections
+max_clients = 100
+
+# Session timeout in seconds (default: 3600 = 1 hour)
+session_timeout_secs = 3600
+
+# Hub defaults
+[hub.defaults]
+# Token budget per request (default: 4000)
+request_token_budget = 4000
+
+# Token budget per session (default: 32000)
+session_token_budget = 32000
+
+# Maximum number of tools exposed per session (default: 20)
+max_tools_exposed = 20
+
+# Fanout timeout in seconds (default: 5)
+fanout_timeout_secs = 5
+
+# Rate limiting: max requests per minute (default: 100)
+max_requests_per_min = 100
+
+# Burst size for rate limiting (default: 20)
+burst_size = 20
+
+# ============================================================================
+# Admin API Configuration
+# ============================================================================
+[admin]
+# Listen address for the admin API
+# Use "0.0.0.0" to listen on all interfaces (recommended for Docker)
+listen_address = "0.0.0.0"
+
+# Listen port for the admin API
+listen_port = 3101
+
+# ============================================================================
+# Filter Configuration
+# ============================================================================
+[filter]
+# Enable or disable filtering
+enabled = true
+
+# Filter mode: "allow" (whitelist) or "deny" (blacklist)
+mode = "allow"
+
+# List of tool patterns to allow/deny (regex patterns)
+patterns = []
+
+# ============================================================================
+# Tool Index Configuration
+# ============================================================================
+[tool_index]
+# Enable tool indexing
+enabled = true
+
+# Maximum number of tools to index
+max_tools = 1000
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+
+# Log format: "json" or "pretty"
+format = "json"
+
+# ============================================================================
+# MCP Server Configurations
+# ============================================================================
+# Each [[servers]] section defines a connection to an MCP server.
+# Multiple servers can be configured.
+
+# Example: Local stdio-based MCP server
+[[servers]]
+# Unique name for this server
+name = "example-server"
+
+# Transport type: "stdio", "sse", "streamable_http"
+transport = "stdio"
+
+# For stdio transport: command to execute
+command = "/path/to/mcp-server"
+
+# Arguments to pass to the command
+args = ["--config", "/etc/mcp/config.toml"]
+
+# Sharing mode: "shared" (one instance for all clients), "pooled" (pool of instances), "dedicated" (one per client)
+sharing = "shared"
+
+# Pool size (only used if sharing = "pooled")
+pool_size = 5
+
+# Priority (higher = more preferred)
+priority = 100
+
+# Tags for categorizing this server
+tags = ["example", "local"]
+
+# Enable or disable this server
+enabled = true
+
+# Timeouts
+[servers.timeouts]
+# Connection timeout in seconds
+connect_timeout_secs = 10
+
+# Request timeout in seconds
+request_timeout_secs = 30
+
+# Idle timeout in seconds
+idle_timeout_secs = 300
+
+# Retries
+[servers.retries]
+# Maximum number of retries
+max_retries = 3
+
+# Backoff strategy: "exponential" or "linear"
+backoff_strategy = "exponential"
+
+# Initial backoff in milliseconds
+initial_backoff_ms = 100
+
+# Maximum backoff in milliseconds
+max_backoff_ms = 5000
+
+# Environment variables to pass to the server
+[servers.env]
+# Example: MCP_LOG_LEVEL = "debug"
+
+# HTTP headers (for sse and streamable_http transports)
+[servers.headers]
+# Example: Authorization = "Bearer token"
+
+# ============================================================================
+# Example: HTTP-based MCP server (SSE transport)
+# ============================================================================
+# [[servers]]
+# name = "http-server"
+# transport = "sse"
+# url = "http://mcp-server:8080/sse"
+# sharing = "shared"
+# priority = 50
+# tags = ["http", "remote"]
+# enabled = false
+#
+# [servers.timeouts]
+# connect_timeout_secs = 10
+# request_timeout_secs = 30
+# idle_timeout_secs = 300
+#
+# [servers.headers]
+# Authorization = "Bearer your-token-here"

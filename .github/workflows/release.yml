@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries (GNU)
+        run: cargo build --release -p scp-hub -p scp-cli --target x86_64-unknown-linux-gnu
+
+      - name: Build release binaries (musl)
+        run: cargo build --release -p scp-hub -p scp-cli --target x86_64-unknown-linux-musl
+
+      - name: Strip binaries (GNU)
+        run: |
+          strip target/x86_64-unknown-linux-gnu/release/scp-hub
+          strip target/x86_64-unknown-linux-gnu/release/scp-cli
+
+      - name: Strip binaries (musl)
+        run: |
+          strip target/x86_64-unknown-linux-musl/release/scp-hub
+          strip target/x86_64-unknown-linux-musl/release/scp-cli
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/x86_64-unknown-linux-gnu/release/scp-hub
+            target/x86_64-unknown-linux-gnu/release/scp-cli
+            target/x86_64-unknown-linux-musl/release/scp-hub
+            target/x86_64-unknown-linux-musl/release/scp-cli
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

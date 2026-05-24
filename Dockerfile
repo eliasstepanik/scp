@@ -1,0 +1,56 @@
+# Multi-stage Dockerfile for SCP Hub and CLI
+# Stage 1: Chef (dependency caching)
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+WORKDIR /app
+
+# Stage 2: Planner (prepare recipe)
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 3: Builder (compile dependencies and application)
+FROM chef AS builder
+WORKDIR /app
+COPY --from=planner /app/recipe.json recipe.json
+
+# Build dependencies (cached layer)
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy source code
+COPY . .
+
+# Build the release binaries
+RUN cargo build --release -p scp-hub -p scp-cli
+
+# Stage 4: Runtime (minimal image)
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 scp
+
+# Copy binaries from builder
+COPY --from=builder /app/target/release/scp-hub /usr/local/bin/scp-hub
+COPY --from=builder /app/target/release/scp-cli /usr/local/bin/scp-cli
+
+# Create config directory
+RUN mkdir -p /etc/scp && chown -R scp:scp /etc/scp
+
+# Switch to non-root user
+USER scp
+
+# Expose ports
+EXPOSE 3100 3101
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:3101/health || exit 1
+
+# Default entrypoint and command
+ENTRYPOINT ["scp-hub"]
+CMD ["--config", "/etc/scp/scp.toml"]
