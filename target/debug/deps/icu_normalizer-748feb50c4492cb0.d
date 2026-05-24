@@ -1,8 +1,0 @@
-C:\Users\Elias Stepanik\OpenCloud\Persönlich\Dev\Projecte\scp\target\debug\deps\icu_normalizer-748feb50c4492cb0.d: C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\lib.rs C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\properties.rs C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\provider.rs C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\uts46.rs
-
-C:\Users\Elias Stepanik\OpenCloud\Persönlich\Dev\Projecte\scp\target\debug\deps\libicu_normalizer-748feb50c4492cb0.rmeta: C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\lib.rs C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\properties.rs C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\provider.rs C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\uts46.rs
-
-C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\lib.rs:
-C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\properties.rs:
-C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\provider.rs:
-C:\Users\Elias\ Stepanik\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\icu_normalizer-2.2.0\src\uts46.rs:
