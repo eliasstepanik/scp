@@ -139,31 +139,53 @@ impl ToolRegistry {
     /// Unregister all tools from a server
     pub fn unregister_server(&mut self, server: &str) {
         if let Some(tool_list) = self.server_tools.remove(server) {
-            for qualified_name in tool_list {
+            for qualified_name in &tool_list {
                 // Remove from tools map
-                if let Some(tool) = self.tools.remove(&qualified_name) {
-                    // Check if we need to restore unqualified alias
+                if let Some(tool) = self.tools.remove(qualified_name) {
                     let original_name = &tool.original_name;
 
-                    // Check if there are other servers with this tool
-                    let other_servers: Vec<String> = self
-                        .server_tools
-                        .iter()
-                        .filter(|(_, tools)| tools.contains(&qualified_name))
-                        .map(|(s, _)| s.clone())
-                        .collect();
+                    // Remove the unqualified alias if it still points at this
+                    // (now-removed) qualified name.  Do NOT restore it — the
+                    // tool no longer exists in the registry after this call.
+                    if self.aliases.get(original_name).map(|q| q == qualified_name).unwrap_or(false) {
+                        self.aliases.remove(original_name);
+                    }
 
-                    if other_servers.is_empty() {
-                        // No other servers have this tool, restore unqualified alias
-                        self.aliases
-                            .insert(original_name.clone(), qualified_name.clone());
+                    // Clean up any collision record that references this qualified name.
+                    if let Some(collisions) = self.collisions.get_mut(original_name) {
+                        collisions.retain(|q| q != qualified_name);
+                        if collisions.is_empty() {
+                            self.collisions.remove(original_name);
+                        }
+                    }
+                }
+            }
 
-                        // Remove from collisions if present
-                        if let Some(collisions) = self.collisions.get_mut(original_name) {
-                            collisions.retain(|q| q != &qualified_name);
-                            if collisions.is_empty() {
-                                self.collisions.remove(original_name);
-                            }
+            // If another server's tool now has no collision partner, restore its
+            // unqualified alias so it can be looked up without a prefix again.
+            for qualified_name in &tool_list {
+                // Derive original_name from the qualified_name format "server.original"
+                if let Some(dot) = qualified_name.find('.') {
+                    let original_name = &qualified_name[dot + 1..];
+                    // If no alias exists for this original name, check whether
+                    // exactly one remaining server still provides it.
+                    if !self.aliases.contains_key(original_name) {
+                        let remaining: Vec<&String> = self
+                            .server_tools
+                            .values()
+                            .flat_map(|tools| tools.iter())
+                            .filter(|q| {
+                                q.find('.')
+                                    .map(|d| &q[d + 1..] == original_name)
+                                    .unwrap_or(false)
+                            })
+                            .collect();
+                        if remaining.len() == 1 {
+                            // Exactly one server still owns this tool → restore alias
+                            self.aliases
+                                .insert(original_name.to_string(), remaining[0].clone());
+                            // Also clear any stale collision entry for it
+                            self.collisions.remove(original_name);
                         }
                     }
                 }

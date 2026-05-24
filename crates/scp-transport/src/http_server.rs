@@ -16,8 +16,15 @@ pub struct HttpServerTransport {
 }
 
 impl HttpServerTransport {
-    /// Create a new HTTP server transport
+    /// Create a new HTTP server transport.
+    ///
+    /// Normalises the URL by stripping a trailing `/mcp` suffix so that callers
+    /// which store the full endpoint URL (e.g. `http://task-mcp:8081/mcp`) and
+    /// callers which store only the base URL (`http://task-mcp:8081`) both work
+    /// correctly.  The transport always appends `/mcp` when constructing requests.
     pub fn new(url: String, headers: HashMap<String, String>) -> Self {
+        let url = url.trim_end_matches("/mcp").to_string();
+        let url = format!("{}/mcp", url);
         Self {
             url,
             session_id: None,
@@ -336,7 +343,21 @@ mod tests {
     fn test_http_server_transport_creation() {
         let transport =
             HttpServerTransport::new("http://localhost:8080".to_string(), HashMap::new());
-        assert_eq!(transport.url, "http://localhost:8080");
+        // URL is normalised to always end with /mcp
+        assert_eq!(transport.url, "http://localhost:8080/mcp");
         assert!(transport.session_id.is_none());
+    }
+
+    #[test]
+    fn test_http_server_transport_url_normalization() {
+        // When config already includes /mcp, it must not be doubled
+        let transport =
+            HttpServerTransport::new("http://task-mcp:8081/mcp".to_string(), HashMap::new());
+        assert_eq!(transport.url, "http://task-mcp:8081/mcp");
+
+        // Base URL without /mcp also works
+        let transport2 =
+            HttpServerTransport::new("http://task-mcp:8081".to_string(), HashMap::new());
+        assert_eq!(transport2.url, "http://task-mcp:8081/mcp");
     }
 }
