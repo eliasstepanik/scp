@@ -23,14 +23,17 @@ COPY . .
 RUN cargo build --release -p scp-hub -p scp-cli
 
 # Stage 4: Runtime (minimal image)
-FROM debian:bookworm-slim
+# Ubuntu 24.04 ships glibc 2.39, matching the GitHub Actions ubuntu-24.04 build runner.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtime dependencies + Node.js for stdio MCP backends
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
+    && apt-get install -y --no-install-recommends nodejs \
     && npm install -g \
         @modelcontextprotocol/server-sequential-thinking \
         @upstash/context7-mcp \
