@@ -94,7 +94,10 @@ mod tests {
         let score1 = tracker.score("profile1", "tool1");
         let score2 = tracker.score("profile1", "tool2");
 
-        assert!(score1 > score2, "Frequently called tool should score higher");
+        assert!(
+            score1 > score2,
+            "Frequently called tool should score higher"
+        );
     }
 
     #[test]
@@ -108,7 +111,10 @@ mod tests {
         // tool2 has never been called
         let score_unseen = tracker.score("profile1", "tool2");
 
-        assert!(score_unseen > 0.0, "Unseen tool should get non-zero floor score (Laplace smoothing)");
+        assert!(
+            score_unseen > 0.0,
+            "Unseen tool should get non-zero floor score (Laplace smoothing)"
+        );
     }
 
     #[test]
@@ -139,7 +145,11 @@ mod tests {
         // With Laplace smoothing, sum of known tools should be approximately 1.0
         // (count + 1) / (total + num_tools) for each tool
         // sum = (2+1 + 1+1 + 1+1) / (4 + 3) = 7 / 7 = 1.0
-        assert!((sum - 1.0).abs() < 0.0001, "Scores should sum to approximately 1.0, got {}", sum);
+        assert!(
+            (sum - 1.0).abs() < 0.0001,
+            "Scores should sum to approximately 1.0, got {}",
+            sum
+        );
     }
 
     #[test]

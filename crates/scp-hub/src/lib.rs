@@ -4,23 +4,23 @@
 //!
 //! Manages sessions, routes requests, caches tools, and coordinates filtering.
 
-/// Session storage and management.
-pub mod session_store;
+/// Admin API endpoints.
+pub mod admin;
+/// SCP extension tools (scp_get_more, scp_info, etc.).
+pub mod extension_tools;
+/// Main hub orchestration.
+pub mod hub;
+/// Prometheus metrics.
+pub mod metrics;
+/// Configuration hot-reload.
+pub mod reload;
 /// Request routing and fan-out.
 pub mod router;
 /// Server connection management.
 pub mod server_manager;
-/// Admin API endpoints.
-pub mod admin;
-/// Configuration hot-reload.
-pub mod reload;
-/// Main hub orchestration.
-pub mod hub;
-/// Tracing and logging setup.
-pub mod tracing_setup;
+/// Session storage and management.
+pub mod session_store;
 /// Tool caching with TTL.
 pub mod tool_cache;
-/// SCP extension tools (scp_get_more, scp_info, etc.).
-pub mod extension_tools;
-/// Prometheus metrics.
-pub mod metrics;
+/// Tracing and logging setup.
+pub mod tracing_setup;

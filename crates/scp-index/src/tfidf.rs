@@ -142,8 +142,6 @@ impl TfIdfIndex {
     }
 }
 
-
-
 /// Tokenize a description: lowercase, split on non-alnum, filter < 3 chars and stop words
 fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
@@ -177,7 +175,10 @@ mod tests {
         let score_a = index.score("server1.read_file", &query);
         let score_b = index.score("server2.web_search", &query);
 
-        assert!(score_a > score_b, "Tool A should score higher for 'file read' query");
+        assert!(
+            score_a > score_b,
+            "Tool A should score higher for 'file read' query"
+        );
         assert!(score_a > 0.0, "Tool A should have non-zero score");
         assert!(score_b >= 0.0, "Tool B should have non-negative score");
     }
@@ -321,6 +322,9 @@ mod tests {
         let score1 = index.score("server1.tool1", &query);
         let score2 = index.score("server1.tool2", &query);
 
-        assert!((score1 - score2).abs() < 0.0001, "Identical descriptions should have equal scores");
+        assert!(
+            (score1 - score2).abs() < 0.0001,
+            "Identical descriptions should have equal scores"
+        );
     }
 }

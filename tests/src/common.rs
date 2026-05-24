@@ -2,11 +2,11 @@ use anyhow::Result;
 use scp_core::mcp_types::{CallToolResult, Implementation, InitializeResult, Tool, ToolContent};
 use scp_transport::stdio_client::StdioClientTransport;
 use serde_json::json;
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
-use std::path::PathBuf;
-use std::io::Write;
 
 /// Mock MCP server for testing
 pub struct MockMcpServer {
@@ -166,7 +166,9 @@ initial_delay_ms = 100
 max_delay_ms = 5000
 backoff_factor = 2.0
 "#,
-            port, auth_token, admin_port,
+            port,
+            auth_token,
+            admin_port,
             mock_server_path.replace("\\", "\\\\")
         );
 
@@ -215,17 +217,17 @@ backoff_factor = 2.0
 
         // Initial sleep to allow hub and mock server to start
         thread::sleep(Duration::from_millis(2000));
-        
+
         // Poll for hub to be ready (health endpoint returns 200)
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(15);
-        
+
         loop {
             if start.elapsed() > timeout {
                 eprintln!("Timeout waiting for hub to be ready");
                 break;
             }
-            
+
             match std::net::TcpStream::connect(format!("127.0.0.1:{}", admin_port)) {
                 Ok(_) => {
                     // Additional sleep to ensure servers are initialized

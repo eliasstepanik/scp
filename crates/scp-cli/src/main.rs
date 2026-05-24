@@ -309,16 +309,25 @@ async fn main() -> Result<()> {
                 if response.status().is_success() {
                     let body = response.json::<serde_json::Value>().await?;
                     println!("Sessions:");
-                    println!("{:<40} {:<15} {:<20} {:<20} {:<10}", "Session ID", "Profile", "Budget Remaining", "Last Active", "Tool Calls");
+                    println!(
+                        "{:<40} {:<15} {:<20} {:<20} {:<10}",
+                        "Session ID", "Profile", "Budget Remaining", "Last Active", "Tool Calls"
+                    );
                     println!("{}", "-".repeat(105));
                     if let Some(sessions) = body["sessions"].as_array() {
                         for session in sessions {
                             let id = session["id"].as_str().unwrap_or("N/A");
-                            let profile = session.get("profile").and_then(|p| p.as_str()).unwrap_or("N/A");
+                            let profile = session
+                                .get("profile")
+                                .and_then(|p| p.as_str())
+                                .unwrap_or("N/A");
                             let budget = session["budget_remaining"].as_u64().unwrap_or(0);
                             let last_active = session["last_active"].as_str().unwrap_or("N/A");
                             let tool_calls = session["tool_call_count"].as_u64().unwrap_or(0);
-                            println!("{:<40} {:<15} {:<20} {:<20} {:<10}", id, profile, budget, last_active, tool_calls);
+                            println!(
+                                "{:<40} {:<15} {:<20} {:<20} {:<10}",
+                                id, profile, budget, last_active, tool_calls
+                            );
                         }
                     }
                 } else {
@@ -344,10 +353,7 @@ async fn main() -> Result<()> {
         Commands::Tools { command } => match command {
             ToolsCommands::List { admin_url } => {
                 let client = Client::new();
-                let response = client
-                    .get(format!("{}/tools", admin_url))
-                    .send()
-                    .await?;
+                let response = client.get(format!("{}/tools", admin_url)).send().await?;
 
                 if response.status().is_success() {
                     let tools = response.json::<Vec<serde_json::Value>>().await?;
@@ -355,7 +361,10 @@ async fn main() -> Result<()> {
                         println!("No tools registered.");
                     } else {
                         println!("Tools:");
-                        println!("{:<40} {:<20} {:<60} {:<10}", "qualified_name", "server", "description", "call_count");
+                        println!(
+                            "{:<40} {:<20} {:<60} {:<10}",
+                            "qualified_name", "server", "description", "call_count"
+                        );
                         println!("{}", "-".repeat(130));
                         for tool in tools {
                             let qualified_name = tool["qualified_name"].as_str().unwrap_or("N/A");
@@ -367,7 +376,10 @@ async fn main() -> Result<()> {
                                 description.to_string()
                             };
                             let call_count = tool["call_count"].as_u64().unwrap_or(0);
-                            println!("{:<40} {:<20} {:<60} {:<10}", qualified_name, server, truncated_desc, call_count);
+                            println!(
+                                "{:<40} {:<20} {:<60} {:<10}",
+                                qualified_name, server, truncated_desc, call_count
+                            );
                         }
                     }
                 } else {
@@ -378,7 +390,11 @@ async fn main() -> Result<()> {
             ToolsCommands::Search { keyword, admin_url } => {
                 let client = Client::new();
                 let response = client
-                    .get(format!("{}/tools?q={}", admin_url, urlencoding::encode(&keyword)))
+                    .get(format!(
+                        "{}/tools?q={}",
+                        admin_url,
+                        urlencoding::encode(&keyword)
+                    ))
                     .send()
                     .await?;
 
@@ -388,7 +404,10 @@ async fn main() -> Result<()> {
                         println!("No tools found matching '{}'.", keyword);
                     } else {
                         println!("Tools matching '{}':", keyword);
-                        println!("{:<40} {:<20} {:<60} {:<10}", "qualified_name", "server", "description", "call_count");
+                        println!(
+                            "{:<40} {:<20} {:<60} {:<10}",
+                            "qualified_name", "server", "description", "call_count"
+                        );
                         println!("{}", "-".repeat(130));
                         for tool in tools {
                             let qualified_name = tool["qualified_name"].as_str().unwrap_or("N/A");
@@ -400,7 +419,10 @@ async fn main() -> Result<()> {
                                 description.to_string()
                             };
                             let call_count = tool["call_count"].as_u64().unwrap_or(0);
-                            println!("{:<40} {:<20} {:<60} {:<10}", qualified_name, server, truncated_desc, call_count);
+                            println!(
+                                "{:<40} {:<20} {:<60} {:<10}",
+                                qualified_name, server, truncated_desc, call_count
+                            );
                         }
                     }
                 } else {
@@ -418,10 +440,10 @@ async fn main() -> Result<()> {
 
             if response.status().is_success() {
                 let metrics = response.json::<serde_json::Value>().await?;
-                
+
                 println!("{:<30} {:<15}", "Metric", "Value");
                 println!("{}", "-".repeat(45));
-                
+
                 // Print simple metrics
                 if let Some(val) = metrics.get("tokens_saved_total") {
                     println!("{:<30} {:<15}", "tokens_saved_total", val);
@@ -438,16 +460,19 @@ async fn main() -> Result<()> {
                 if let Some(val) = metrics.get("inflight_requests") {
                     println!("{:<30} {:<15}", "inflight_requests", val);
                 }
-                
+
                 // Print error metrics
                 if let Some(errors) = metrics.get("errors_total").and_then(|e| e.as_object()) {
                     for (kind, count) in errors {
                         println!("{:<30} {:<15}", format!("errors.{}", kind), count);
                     }
                 }
-                
+
                 // Print request duration metrics
-                if let Some(duration) = metrics.get("request_duration_seconds").and_then(|d| d.as_object()) {
+                if let Some(duration) = metrics
+                    .get("request_duration_seconds")
+                    .and_then(|d| d.as_object())
+                {
                     if let Some(count) = duration.get("count") {
                         println!("{:<30} {:<15}", "request_duration_count", count);
                     }
@@ -462,21 +487,24 @@ async fn main() -> Result<()> {
 
         Commands::Health { admin_url } => {
             let client = Client::new();
-            let response = client
-                .get(format!("{}/health", admin_url))
-                .send()
-                .await?;
+            let response = client.get(format!("{}/health", admin_url)).send().await?;
 
             if response.status().is_success() {
                 let health = response.json::<serde_json::Value>().await?;
-                
-                let status = health.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+
+                let status = health
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown");
                 let servers = health.get("servers").and_then(|s| s.as_u64()).unwrap_or(0);
                 let healthy = health.get("healthy").and_then(|h| h.as_u64()).unwrap_or(0);
                 let sessions = health.get("sessions").and_then(|s| s.as_u64()).unwrap_or(0);
-                
-                println!("Status: {}  Servers: {}/{}  Sessions: {}", status, healthy, servers, sessions);
-                
+
+                println!(
+                    "Status: {}  Servers: {}/{}  Sessions: {}",
+                    status, healthy, servers, sessions
+                );
+
                 // Exit with appropriate code
                 match status {
                     "ok" | "degraded" => std::process::exit(0),

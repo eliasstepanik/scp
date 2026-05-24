@@ -1,7 +1,7 @@
+use crate::embedding_scorer::EmbeddingToolScorer;
 use crate::scorer::ScoringPipeline;
 use crate::tfidf::TfIdfIndex;
 use crate::usage::UsageTracker;
-use crate::embedding_scorer::EmbeddingToolScorer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -267,7 +267,7 @@ impl ToolRegistry {
 
         // Call embedding scorer (returns Vec<(String, f32)>, not Result)
         let results = scorer.score_tools(&pairs, query).await;
-        
+
         // Convert Vec<(String, f32)> to HashMap<String, f32>
         results.into_iter().collect()
     }
@@ -305,7 +305,8 @@ impl ToolRegistry {
         let result: Vec<crate::ScoredTool> = scored.iter().take(max).cloned().collect();
 
         // Collect names of tools already in result
-        let result_names: std::collections::HashSet<String> = result.iter().map(|t| t.qualified_name.clone()).collect();
+        let result_names: std::collections::HashSet<String> =
+            result.iter().map(|t| t.qualified_name.clone()).collect();
 
         // Append any always_include tools not already in the top max
         let mut final_result = result;
@@ -468,7 +469,14 @@ mod tests {
 
         // tool3 should be in the results
         let has_tool3 = selected.iter().any(|t| t.qualified_name == "server1.tool3");
-        assert!(has_tool3, "tool3 should be in results. Got: {:?}", selected.iter().map(|t| &t.qualified_name).collect::<Vec<_>>());
+        assert!(
+            has_tool3,
+            "tool3 should be in results. Got: {:?}",
+            selected
+                .iter()
+                .map(|t| &t.qualified_name)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -485,10 +493,7 @@ mod tests {
         assert_eq!(registry.tool_count(), 3);
 
         // Rebuild with new tools (2 new tools, 1 old tool removed)
-        let new_tools = vec![
-            create_test_tool("search"),
-            create_test_tool("query"),
-        ];
+        let new_tools = vec![create_test_tool("search"), create_test_tool("query")];
         registry.rebuild_for_server("serverA", new_tools);
 
         // Verify old tools are gone and new ones are present
@@ -524,6 +529,10 @@ mod tests {
         let keywords = vec![];
         let selected = registry.select_tools(&keywords, "profile1", 3, &[], None);
 
-        assert_eq!(selected.len(), 3, "Should return exactly 3 tools when max=3");
+        assert_eq!(
+            selected.len(),
+            3,
+            "Should return exactly 3 tools when max=3"
+        );
     }
 }

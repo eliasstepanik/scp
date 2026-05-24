@@ -1,7 +1,7 @@
-use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_core::config::FilterConfig;
-use scp_hub::session_store::SessionStore;
+use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_hub::router::Router;
+use scp_hub::session_store::SessionStore;
 use scp_index::ToolRegistry;
 use scp_pool::PoolManager;
 use serde_json::json;
@@ -25,7 +25,7 @@ async fn test_full_hub_lifecycle() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        300, // fanout_timeout_secs
+        300,  // fanout_timeout_secs
         4000, // request_token_budget
     ));
 
@@ -73,7 +73,11 @@ async fn test_full_hub_lifecycle() {
             // Extract tool names
             let tool_names: Vec<String> = tools_array
                 .iter()
-                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .filter_map(|t| {
+                    t.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect();
 
             // Verify all 4 extension tools are present
@@ -130,7 +134,9 @@ async fn test_tool_call_proxied_through_filter() {
     ));
 
     // Create a session with a known budget
-    let (session_id, _rx) = session_store.create(None, "default".to_string(), 5000, 60).await;
+    let (session_id, _rx) = session_store
+        .create(None, "default".to_string(), 5000, 60)
+        .await;
 
     // Get initial budget
     let session_before = session_store
@@ -210,9 +216,18 @@ async fn test_admin_api_sessions() {
     );
 
     // Verify sessions are different
-    assert_ne!(session1_id, session2_id, "Sessions should have different IDs");
-    assert_ne!(session2_id, session3_id, "Sessions should have different IDs");
-    assert_ne!(session1_id, session3_id, "Sessions should have different IDs");
+    assert_ne!(
+        session1_id, session2_id,
+        "Sessions should have different IDs"
+    );
+    assert_ne!(
+        session2_id, session3_id,
+        "Sessions should have different IDs"
+    );
+    assert_ne!(
+        session1_id, session3_id,
+        "Sessions should have different IDs"
+    );
 
     // Verify session count
     let sessions_list = session_store.list().await;

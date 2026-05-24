@@ -1,5 +1,5 @@
-use crate::token_count::count_tokens;
 use crate::chunker::Chunk;
+use crate::token_count::count_tokens;
 use scp_core::protocol::JsonRpcResponse;
 use serde_json::Value;
 
@@ -86,7 +86,9 @@ impl BudgetEnforcer {
             let score_a = if a.score.is_nan() { 0.0 } else { a.score };
             let score_b = if b.score.is_nan() { 0.0 } else { b.score };
             // Reverse order for descending sort
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Greedily select chunks by score
@@ -218,7 +220,7 @@ mod tests {
         assert_eq!(total, 5);
         // Should select highest-scoring chunks: 0.9, 0.7, 0.5
         assert!(selected.len() >= 2); // At least the top 2 should fit
-        // Verify they're in document order
+                                      // Verify they're in document order
         for i in 1..selected.len() {
             assert!(selected[i].index > selected[i - 1].index);
         }

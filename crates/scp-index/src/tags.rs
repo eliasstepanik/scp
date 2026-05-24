@@ -27,20 +27,13 @@ impl TagScorer {
         }
 
         // Convert to lowercase sets for case-insensitive comparison
-        let tags_set: HashSet<String> = tool_tags
-            .iter()
-            .map(|t| t.to_lowercase())
-            .collect();
+        let tags_set: HashSet<String> = tool_tags.iter().map(|t| t.to_lowercase()).collect();
 
-        let keywords_set: HashSet<String> = context_keywords
-            .iter()
-            .map(|k| k.to_lowercase())
-            .collect();
+        let keywords_set: HashSet<String> =
+            context_keywords.iter().map(|k| k.to_lowercase()).collect();
 
         // Compute intersection and union
-        let intersection = tags_set
-            .intersection(&keywords_set)
-            .count();
+        let intersection = tags_set.intersection(&keywords_set).count();
         let union = tags_set.union(&keywords_set).count();
 
         // Jaccard similarity

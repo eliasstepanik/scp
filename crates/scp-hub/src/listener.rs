@@ -148,10 +148,7 @@ async fn auth_middleware(
                 match auth_config.resolve_profile(token) {
                     Some(profile_name) => profile_name,
                     None => {
-                        return Err((
-                            StatusCode::UNAUTHORIZED,
-                            "Invalid bearer token".to_string(),
-                        ));
+                        return Err((StatusCode::UNAUTHORIZED, "Invalid bearer token".to_string()));
                     }
                 }
             }
@@ -271,8 +268,13 @@ async fn handle_post_mcp(
                 })?,
             );
 
-            crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["rate_limited"]).inc();
-            return Err((StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded".to_string()));
+            crate::metrics::SCP_ERRORS_TOTAL
+                .with_label_values(&["rate_limited"])
+                .inc();
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "Rate limit exceeded".to_string(),
+            ));
         }
         rate_limit_remaining = session_locked.rate_limit_remaining;
         let now = SystemTime::now()
@@ -469,16 +471,11 @@ async fn handle_delete_mcp(
 }
 
 /// Run stdio client listener (P2.J)
-pub async fn run_stdio_client(
-    session_store: Arc<SessionStore>,
-    router: Arc<Router>,
-) -> Result<()> {
+pub async fn run_stdio_client(session_store: Arc<SessionStore>, router: Arc<Router>) -> Result<()> {
     info!("Stdio client listener started");
 
     // Create a session with "default" profile and no bearer token
-    let (session_id, mut outbound_rx) = session_store
-        .create_with_defaults(None)
-        .await;
+    let (session_id, mut outbound_rx) = session_store.create_with_defaults(None).await;
 
     debug!("Created session for stdio client: {}", session_id);
 

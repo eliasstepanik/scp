@@ -1,16 +1,16 @@
-use std::sync::{Arc, Mutex};
-use std::collections::HashSet;
-use serde_json::Value;
-use crate::dedup::DeliveryLog;
+use crate::budget::BudgetEnforcer;
+use crate::chunker::{Chunk, ChunkSplitter};
 use crate::content_type::{ContentType, ContentTypeRouter};
 use crate::dedup::DedupFilter;
-use crate::chunker::{ChunkSplitter, Chunk};
-use crate::relevance::RelevanceScorer;
-use crate::embedding_scorer::EmbeddingChunkScorer;
-use crate::budget::BudgetEnforcer;
-use crate::progressive::ProgressiveDisclosureAnnotator;
+use crate::dedup::DeliveryLog;
 use crate::delivery_logger::DeliveryLogger;
+use crate::embedding_scorer::EmbeddingChunkScorer;
+use crate::progressive::ProgressiveDisclosureAnnotator;
+use crate::relevance::RelevanceScorer;
 use crate::token_count::count_tokens;
+use serde_json::Value;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 /// Context passed to the pipeline for each tool call
 pub struct FilterContext {
@@ -123,12 +123,12 @@ impl FilterPipeline {
         let delivery_log = ctx.delivery_log.clone();
         let query_terms = ctx.query_terms.clone();
         let request_id = ctx.request_id.clone();
-        
+
         let is_duplicate = {
             let delivery_log_guard = delivery_log.lock().unwrap_or_else(|e| e.into_inner());
             delivery_log_guard.contains(&full_hash)
         };
-        
+
         if is_duplicate {
             return FilterResult {
                 content: String::new(),
@@ -162,7 +162,9 @@ impl FilterPipeline {
         if self.relevance_engine == "embedding" && self.embedding_scorer.is_some() {
             let query_string = query_terms.join(" ");
             if let Some(scorer) = &self.embedding_scorer {
-                scorer.score_chunks(&mut chunks, &query_string, &query_terms).await;
+                scorer
+                    .score_chunks(&mut chunks, &query_string, &query_terms)
+                    .await;
             }
         } else {
             RelevanceScorer::score_chunks(&mut chunks, &query_terms);
@@ -346,7 +348,8 @@ mod tests {
         };
 
         // Create large content to avoid short-circuit
-        let content = Value::String("This is test content that should be deduplicated. ".repeat(50));
+        let content =
+            Value::String("This is test content that should be deduplicated. ".repeat(50));
 
         // First call
         let result1 = pipeline.run(&content, &ctx1).await;

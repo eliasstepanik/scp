@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use scp_filter::{
-    FilterPipeline, FilterContext, token_count::count_tokens, chunker::Chunk,
-    relevance::RelevanceScorer, dedup::DeliveryLog,
-};
 use scp_core::config::FilterConfig;
+use scp_filter::{
+    chunker::Chunk, dedup::DeliveryLog, relevance::RelevanceScorer, token_count::count_tokens,
+    FilterContext, FilterPipeline,
+};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -104,7 +104,7 @@ fn bench_token_counting(c: &mut Criterion) {
                 The heuristic-based token counter uses byte ratios to estimate token counts. \
                 This is much faster than using a real tokenizer like tiktoken or sentencepiece. \
                 "
-        .repeat(200); // Repeat to reach ~10KB
+    .repeat(200); // Repeat to reach ~10KB
 
     c.bench_function("token_counting_10kb", |b| {
         b.iter(|| {

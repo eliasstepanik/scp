@@ -33,10 +33,7 @@ async fn test_initialize_handshake() {
 
     assert_eq!(response.status(), 200);
 
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse response");
+    let body: serde_json::Value = response.json().await.expect("Failed to parse response");
 
     assert_eq!(body.get("id"), Some(&json!(1)));
     assert!(body.get("result").is_some());
@@ -44,7 +41,10 @@ async fn test_initialize_handshake() {
 
     let result = body.get("result").unwrap();
     assert_eq!(
-        result.get("serverInfo").and_then(|s| s.get("name")).and_then(|n| n.as_str()),
+        result
+            .get("serverInfo")
+            .and_then(|s| s.get("name"))
+            .and_then(|n| n.as_str()),
         Some("scp")
     );
 
@@ -93,10 +93,7 @@ async fn test_tools_list_passthrough() {
 
     assert_eq!(response.status(), 200);
 
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse response");
+    let body: serde_json::Value = response.json().await.expect("Failed to parse response");
 
     assert_eq!(body.get("id"), Some(&json!(2)));
     assert!(body.get("result").is_some());
@@ -160,7 +157,11 @@ async fn test_tools_call_passthrough() {
         .and_then(|t| t.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|tool| tool.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .filter_map(|tool| {
+                    tool.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -191,10 +192,7 @@ async fn test_tools_call_passthrough() {
 
     assert_eq!(response.status(), 200);
 
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse response");
+    let body: serde_json::Value = response.json().await.expect("Failed to parse response");
 
     assert_eq!(body.get("id"), Some(&json!(3)));
     assert!(body.get("result").is_some(), "Response body: {:?}", body);
@@ -263,10 +261,7 @@ async fn test_ping_handled_by_scp() {
 
     assert_eq!(response.status(), 200);
 
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse response");
+    let body: serde_json::Value = response.json().await.expect("Failed to parse response");
 
     assert_eq!(body.get("id"), Some(&json!(3)));
     assert!(body.get("result").is_some());
@@ -318,10 +313,7 @@ async fn test_id_remapping() {
 
     assert_eq!(response1.status(), 200);
 
-    let body1: serde_json::Value = response1
-        .json()
-        .await
-        .expect("Failed to parse response");
+    let body1: serde_json::Value = response1.json().await.expect("Failed to parse response");
 
     assert_eq!(body1.get("id"), Some(&json!(100)));
     assert!(body1.get("result").is_some());
@@ -339,10 +331,7 @@ async fn test_id_remapping() {
 
     assert_eq!(response2.status(), 200);
 
-    let body2: serde_json::Value = response2
-        .json()
-        .await
-        .expect("Failed to parse response");
+    let body2: serde_json::Value = response2.json().await.expect("Failed to parse response");
 
     assert_eq!(body2.get("id"), Some(&json!(200)));
     assert!(body2.get("result").is_some());

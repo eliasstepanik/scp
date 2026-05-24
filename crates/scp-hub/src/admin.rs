@@ -436,7 +436,10 @@ mod tests {
     #[tokio::test]
     async fn test_list_tools_empty() {
         let state = AdminState {
-            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            server_manager: ServerManager::new(
+                Arc::new(scp_pool::PoolManager::new()),
+                Arc::new(RwLock::new(ToolRegistry::new())),
+            ),
             auth_token: None,
             session_store: None,
             tool_registry: None,
@@ -462,7 +465,10 @@ mod tests {
         registry.register_tools("fs", tools);
 
         let state = AdminState {
-            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            server_manager: ServerManager::new(
+                Arc::new(scp_pool::PoolManager::new()),
+                Arc::new(RwLock::new(ToolRegistry::new())),
+            ),
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
@@ -491,7 +497,10 @@ mod tests {
         registry.register_tools("fs", tools);
 
         let state = AdminState {
-            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            server_manager: ServerManager::new(
+                Arc::new(scp_pool::PoolManager::new()),
+                Arc::new(RwLock::new(ToolRegistry::new())),
+            ),
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
@@ -521,7 +530,10 @@ mod tests {
         registry.register_tools("fs", tools);
 
         let state = AdminState {
-            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            server_manager: ServerManager::new(
+                Arc::new(scp_pool::PoolManager::new()),
+                Arc::new(RwLock::new(ToolRegistry::new())),
+            ),
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
@@ -550,7 +562,10 @@ mod tests {
         registry.register_tools("fs", tools);
 
         let state = AdminState {
-            server_manager: ServerManager::new(Arc::new(scp_pool::PoolManager::new()), Arc::new(RwLock::new(ToolRegistry::new()))),
+            server_manager: ServerManager::new(
+                Arc::new(scp_pool::PoolManager::new()),
+                Arc::new(RwLock::new(ToolRegistry::new())),
+            ),
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
@@ -571,9 +586,11 @@ mod tests {
     #[tokio::test]
     async fn test_prometheus_metrics_endpoint() {
         // Increment one of the error counters to ensure it appears in output
-        crate::metrics::SCP_ERRORS_TOTAL.with_label_values(&["test"]).inc();
+        crate::metrics::SCP_ERRORS_TOTAL
+            .with_label_values(&["test"])
+            .inc();
         let metrics_output = crate::metrics::gather_metrics();
-        
+
         assert!(metrics_output.contains("scp_tokens_saved_total"));
         assert!(metrics_output.contains("scp_tokens_delivered_total"));
         assert!(metrics_output.contains("scp_embedding_fallback_total"));

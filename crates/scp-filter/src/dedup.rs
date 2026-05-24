@@ -1,4 +1,4 @@
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 
 /// SHA-256 hash of a content chunk (32 bytes)
@@ -104,7 +104,7 @@ mod tests {
     fn test_delivery_log_insert_and_contains() {
         let mut log = DeliveryLog::new(10);
         let hash = DedupFilter::hash_text("test content");
-        
+
         assert!(!log.contains(&hash));
         log.insert(hash);
         assert!(log.contains(&hash));
@@ -120,12 +120,12 @@ mod tests {
     #[test]
     fn test_delivery_log_lru_eviction() {
         let mut log = DeliveryLog::new(3);
-        
+
         let hash1 = DedupFilter::hash_text("content 1");
         let hash2 = DedupFilter::hash_text("content 2");
         let hash3 = DedupFilter::hash_text("content 3");
         let hash4 = DedupFilter::hash_text("content 4");
-        
+
         // Insert 3 items (at capacity)
         log.insert(hash1);
         log.insert(hash2);
@@ -134,7 +134,7 @@ mod tests {
         assert!(log.contains(&hash1));
         assert!(log.contains(&hash2));
         assert!(log.contains(&hash3));
-        
+
         // Insert 4th item, should evict hash1 (oldest)
         log.insert(hash4);
         assert_eq!(log.len(), 3);
@@ -149,7 +149,7 @@ mod tests {
         let mut log = DeliveryLog::new(10);
         let text = "test content";
         let hash = DedupFilter::hash_text(text);
-        
+
         log.insert(hash);
         assert!(DedupFilter::is_duplicate(text, &log));
     }

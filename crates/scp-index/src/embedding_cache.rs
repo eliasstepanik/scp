@@ -1,7 +1,7 @@
-use sha2::{Sha256, Digest};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 /// In-memory embedding cache with optional disk persistence.
 /// Keys are SHA-256 hashes of the input text.

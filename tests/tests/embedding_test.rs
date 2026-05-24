@@ -89,7 +89,10 @@ async fn test_progressive_disclosure_end_to_end() {
         .expect("Session should exist");
     {
         let mut session_locked = session.lock().unwrap();
-        session_locked.store_chunks("test-req-1".to_string(), filter_result.dropped_chunks.clone());
+        session_locked.store_chunks(
+            "test-req-1".to_string(),
+            filter_result.dropped_chunks.clone(),
+        );
     }
 
     // Retrieve the chunks from the session
@@ -116,10 +119,7 @@ async fn test_progressive_disclosure_end_to_end() {
         let offset = 0;
         let limit = 5;
         let subset: Vec<_> = all_chunks.iter().skip(offset).take(limit).collect();
-        assert!(
-            subset.len() <= limit,
-            "Subset should respect limit"
-        );
+        assert!(subset.len() <= limit, "Subset should respect limit");
     }
 }
 
@@ -149,7 +149,8 @@ async fn test_fallback_to_keyword_scoring() {
     let pipeline = FilterPipeline::new(&filter_config);
 
     // Create a content string with keyword "error"
-    let content = "This is a test with error handling. Error occurred at line 42. Another error message.";
+    let content =
+        "This is a test with error handling. Error occurred at line 42. Another error message.";
 
     // Create a FilterContext
     let delivery_log = Arc::new(Mutex::new(DeliveryLog::new(10_000)));
@@ -214,7 +215,11 @@ async fn test_extension_tools_always_present() {
     // Collect tool names
     let tool_names: Vec<String> = tools_array
         .iter()
-        .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        .filter_map(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
 
     // Assert extension tools are present
@@ -292,8 +297,8 @@ async fn test_scp_info_returns_version() {
         .expect("Response should contain content text");
 
     // Parse content as JSON
-    let info_json: serde_json::Value = serde_json::from_str(content)
-        .expect("scp_info response should be valid JSON");
+    let info_json: serde_json::Value =
+        serde_json::from_str(content).expect("scp_info response should be valid JSON");
 
     // Assert version is present
     assert!(

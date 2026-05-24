@@ -2,13 +2,13 @@ mod admin;
 mod extension_tools;
 mod hub;
 mod listener;
+mod metrics;
 mod reload;
 mod router;
 mod server_manager;
 mod session_store;
 mod tool_cache;
 mod tracing_setup;
-mod metrics;
 
 use admin::{start_admin_api_with_shutdown, AdminState};
 use anyhow::Result;
@@ -131,7 +131,9 @@ async fn main() -> Result<()> {
     }
 
     // Create session store
-    let session_store = Arc::new(session_store::SessionStore::new(config.hub.session_timeout_secs as usize));
+    let session_store = Arc::new(session_store::SessionStore::new(
+        config.hub.session_timeout_secs as usize,
+    ));
 
     // Create router
     let router = Arc::new(router::Router::new(
@@ -159,22 +161,24 @@ async fn main() -> Result<()> {
             let mut rx = admin_shutdown_rx;
             let _ = rx.recv().await;
         };
-        if let Err(e) = start_admin_api_with_shutdown("127.0.0.1", admin_addr, admin_state, shutdown).await {
+        if let Err(e) =
+            start_admin_api_with_shutdown("127.0.0.1", admin_addr, admin_state, shutdown).await
+        {
             eprintln!("Admin API error: {}", e);
         }
     });
 
     // Start HTTP client listener with graceful shutdown
     let client_addr = SocketAddr::new(
-        config.hub.listen_address.parse().unwrap_or_else(|_| "127.0.0.1".parse().unwrap()),
+        config
+            .hub
+            .listen_address
+            .parse()
+            .unwrap_or_else(|_| "127.0.0.1".parse().unwrap()),
         config.hub.listen_port,
     );
-    let client_listener = ClientListener::new(
-        client_addr,
-        session_store.clone(),
-        router.clone(),
-        None,
-    );
+    let client_listener =
+        ClientListener::new(client_addr, session_store.clone(), router.clone(), None);
     let client_shutdown_rx = shutdown_rx.resubscribe();
     let client_handle = tokio::spawn(async move {
         let shutdown = async {

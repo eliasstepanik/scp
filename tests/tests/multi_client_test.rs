@@ -1,14 +1,14 @@
-use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_core::config::FilterConfig;
-use scp_hub::session_store::SessionStore;
+use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_hub::router::Router;
+use scp_hub::session_store::SessionStore;
 use scp_index::ToolRegistry;
 use scp_pool::PoolManager;
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
-use std::time::Duration;
 
 // ============================================================================
 // Test 1: Two clients with separate sessions, each calls tools/list and tools/call
@@ -25,23 +25,28 @@ async fn test_multi_client_tools_list_and_call() {
         pool_manager.clone(),
         tool_registry.clone(),
         4000, // request_token_budget
-        300, // fanout_timeout_secs
+        300,  // fanout_timeout_secs
     ));
 
     // Create two sessions (simulating two clients)
-    let (session1_id, _rx1) = session_store
-        .create_with_defaults(None)
-        .await;
-    let (session2_id, _rx2) = session_store
-        .create_with_defaults(None)
-        .await;
+    let (session1_id, _rx1) = session_store.create_with_defaults(None).await;
+    let (session2_id, _rx2) = session_store.create_with_defaults(None).await;
 
     // Verify both sessions exist
-    assert!(session_store.get(&session1_id).await.is_some(), "Session 1 should exist");
-    assert!(session_store.get(&session2_id).await.is_some(), "Session 2 should exist");
+    assert!(
+        session_store.get(&session1_id).await.is_some(),
+        "Session 1 should exist"
+    );
+    assert!(
+        session_store.get(&session2_id).await.is_some(),
+        "Session 2 should exist"
+    );
 
     // Verify sessions are different
-    assert_ne!(session1_id, session2_id, "Sessions should have different IDs");
+    assert_ne!(
+        session1_id, session2_id,
+        "Sessions should have different IDs"
+    );
 
     // Test tools/list for both clients
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
@@ -72,12 +77,26 @@ async fn test_multi_client_tools_list_and_call() {
 
     // Both should get responses (either result or error)
     // The important thing is that each client gets their own response with their ID
-    assert_eq!(resp1_call.id, Some(RequestId::Number(2)), "Client 1 should get their request ID");
-    assert_eq!(resp2_call.id, Some(RequestId::Number(2)), "Client 2 should get their request ID");
-    
+    assert_eq!(
+        resp1_call.id,
+        Some(RequestId::Number(2)),
+        "Client 1 should get their request ID"
+    );
+    assert_eq!(
+        resp2_call.id,
+        Some(RequestId::Number(2)),
+        "Client 2 should get their request ID"
+    );
+
     // Both should have either a result or an error (not both)
-    assert!(resp1_call.result.is_some() || resp1_call.error.is_some(), "Client 1 should get a response");
-    assert!(resp2_call.result.is_some() || resp2_call.error.is_some(), "Client 2 should get a response");
+    assert!(
+        resp1_call.result.is_some() || resp1_call.error.is_some(),
+        "Client 1 should get a response"
+    );
+    assert!(
+        resp2_call.result.is_some() || resp2_call.error.is_some(),
+        "Client 2 should get a response"
+    );
 }
 
 // ============================================================================
@@ -116,14 +135,23 @@ async fn test_session_budget_isolation() {
     assert!(resp2.result.is_some(), "Client 2 should get result");
 
     // Verify that each session has its own budget
-    let session1 = session_store.get(&session1_id).await.expect("Session 1 should exist");
-    let session2 = session_store.get(&session2_id).await.expect("Session 2 should exist");
+    let session1 = session_store
+        .get(&session1_id)
+        .await
+        .expect("Session 1 should exist");
+    let session2 = session_store
+        .get(&session2_id)
+        .await
+        .expect("Session 2 should exist");
 
     let budget1 = session1.lock().unwrap().token_budget_remaining;
     let budget2 = session2.lock().unwrap().token_budget_remaining;
 
     // Session 1 should have less budget than session 2
-    assert!(budget1 < budget2, "Session 1 should have less budget than session 2");
+    assert!(
+        budget1 < budget2,
+        "Session 1 should have less budget than session 2"
+    );
 }
 
 // ============================================================================
@@ -144,12 +172,8 @@ async fn test_request_id_isolation() {
     ));
 
     // Create two sessions
-    let (session1_id, _rx1) = session_store
-        .create_with_defaults(None)
-        .await;
-    let (session2_id, _rx2) = session_store
-        .create_with_defaults(None)
-        .await;
+    let (session1_id, _rx1) = session_store.create_with_defaults(None).await;
+    let (session2_id, _rx2) = session_store.create_with_defaults(None).await;
 
     // Both clients send requests with the same ID
     let req_id = RequestId::Number(42);
@@ -159,8 +183,16 @@ async fn test_request_id_isolation() {
     let resp2 = router.route(list_req.clone()).await;
 
     // Each client should receive their own response with their request ID
-    assert_eq!(resp1.id, Some(RequestId::Number(42)), "Client 1 should get ID 42");
-    assert_eq!(resp2.id, Some(RequestId::Number(42)), "Client 2 should get ID 42");
+    assert_eq!(
+        resp1.id,
+        Some(RequestId::Number(42)),
+        "Client 1 should get ID 42"
+    );
+    assert_eq!(
+        resp2.id,
+        Some(RequestId::Number(42)),
+        "Client 2 should get ID 42"
+    );
 
     // Verify no cross-session response leakage
     // Both should have results (not errors)
@@ -199,12 +231,13 @@ async fn test_session_expiry() {
     let session_store = Arc::new(SessionStore::new(1)); // 1 second timeout
 
     // Create a session
-    let (session_id, _rx) = session_store
-        .create_with_defaults(None)
-        .await;
+    let (session_id, _rx) = session_store.create_with_defaults(None).await;
 
     // Verify session exists
-    assert!(session_store.get(&session_id).await.is_some(), "Session should exist initially");
+    assert!(
+        session_store.get(&session_id).await.is_some(),
+        "Session should exist initially"
+    );
 
     // Wait for session to expire (1 second timeout + buffer)
     sleep(Duration::from_secs(2)).await;
@@ -213,10 +246,13 @@ async fn test_session_expiry() {
     // Note: The session store doesn't automatically clean up expired sessions,
     // so we verify that the session's last_active time indicates it's old
     if let Some(session) = session_store.get(&session_id).await {
-         let session_locked = session.lock().unwrap();
-         let elapsed = session_locked.last_active.elapsed();
-         assert!(elapsed.as_secs() >= 1, "Session should be at least 1 second old");
-     }
+        let session_locked = session.lock().unwrap();
+        let elapsed = session_locked.last_active.elapsed();
+        assert!(
+            elapsed.as_secs() >= 1,
+            "Session should be at least 1 second old"
+        );
+    }
 }
 
 // ============================================================================
@@ -237,9 +273,7 @@ async fn test_concurrent_requests_same_session() {
     ));
 
     // Create a session
-    let (session_id, _rx) = session_store
-        .create_with_defaults(None)
-        .await;
+    let (session_id, _rx) = session_store.create_with_defaults(None).await;
 
     // Send multiple concurrent requests from the same session
     let mut handles = vec![];
@@ -248,11 +282,7 @@ async fn test_concurrent_requests_same_session() {
         let router_clone = router.clone();
 
         let handle = tokio::spawn(async move {
-            let req = JsonRpcRequest::new(
-                RequestId::Number(i),
-                "tools/list".to_string(),
-                None,
-            );
+            let req = JsonRpcRequest::new(RequestId::Number(i), "tools/list".to_string(), None);
             router_clone.route(req).await
         });
 
@@ -269,7 +299,12 @@ async fn test_concurrent_requests_same_session() {
     // All requests should succeed
     for (i, resp) in results.iter().enumerate() {
         assert!(resp.result.is_some(), "Request {} should succeed", i + 1);
-        assert_eq!(resp.id, Some(RequestId::Number((i + 1) as i64)), "Request {} should have correct ID", i + 1);
+        assert_eq!(
+            resp.id,
+            Some(RequestId::Number((i + 1) as i64)),
+            "Request {} should have correct ID",
+            i + 1
+        );
     }
 }
 
@@ -317,9 +352,18 @@ async fn test_session_isolation() {
     assert!(resp3.result.is_some());
 
     // Verify each session maintains its own state
-    let s1 = session_store.get(&session1_id).await.expect("Session 1 should exist");
-    let s2 = session_store.get(&session2_id).await.expect("Session 2 should exist");
-    let s3 = session_store.get(&session3_id).await.expect("Session 3 should exist");
+    let s1 = session_store
+        .get(&session1_id)
+        .await
+        .expect("Session 1 should exist");
+    let s2 = session_store
+        .get(&session2_id)
+        .await
+        .expect("Session 2 should exist");
+    let s3 = session_store
+        .get(&session3_id)
+        .await
+        .expect("Session 3 should exist");
 
     let s1_locked = s1.lock().unwrap();
     let s2_locked = s2.lock().unwrap();

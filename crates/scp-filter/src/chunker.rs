@@ -1,5 +1,5 @@
-use serde_json::Value;
 use crate::token_count::count_tokens;
+use serde_json::Value;
 
 /// A single chunk of content with its source position and relevance score.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,7 +15,11 @@ pub struct Chunk {
 impl Chunk {
     /// Create a new chunk with the given text and index.
     pub fn new(text: String, index: usize) -> Self {
-        Self { text, index, score: 0.0 }
+        Self {
+            text,
+            index,
+            score: 0.0,
+        }
     }
 }
 

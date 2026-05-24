@@ -1,7 +1,7 @@
+use scp_core::config::LoggingConfig;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
-use scp_core::config::LoggingConfig;
 
 /// Output format for tracing logs.
 #[derive(Debug, Clone, Copy)]
@@ -47,8 +47,8 @@ pub fn init_tracing(format: TracingFormat, level: &str) {
 
 /// Initialize tracing from LoggingConfig
 pub fn init_tracing_from_config(config: &LoggingConfig) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.level));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.level));
 
     if config.format == "json" {
         tracing_subscriber::registry()
