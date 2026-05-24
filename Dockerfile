@@ -39,15 +39,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         @upstash/context7-mcp \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd -m -u 1000 scp
+# Create non-root user (Ubuntu 24.04 reserves UID 1000 for the 'ubuntu' user, so use 1001)
+RUN useradd -m -u 1001 scp
 
 # Copy binaries from builder
 COPY --from=builder /app/target/release/scp-hub /usr/local/bin/scp-hub
 COPY --from=builder /app/target/release/scp-cli /usr/local/bin/scp-cli
 
 # Create config directory
-RUN mkdir -p /etc/scp && chown -R scp:scp /etc/scp
+RUN mkdir -p /etc/scp && chown -R scp:scp /etc/scp /usr/local/bin/scp-hub /usr/local/bin/scp-cli
 
 # Switch to non-root user
 USER scp
