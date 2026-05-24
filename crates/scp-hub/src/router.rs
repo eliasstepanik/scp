@@ -314,6 +314,42 @@ impl Router {
             }
         };
 
+        // If tool_name is dot-qualified (e.g. "memory-mcp.list_memories"), route directly
+        // to the named server without a registry lookup.
+        if let Some(dot_pos) = tool_name.find('.') {
+            let server_name = tool_name[..dot_pos].to_string();
+            let actual_tool = tool_name[dot_pos + 1..].to_string();
+
+            // Rewrite the "name" field in params to the unqualified tool name
+            let mut new_params = request.params.clone().unwrap_or(serde_json::json!({}));
+            if let Some(obj) = new_params.as_object_mut() {
+                obj.insert("name".to_string(), serde_json::json!(actual_tool));
+            }
+
+            return match self
+                .call_backend(&server_name, "tools/call", Some(new_params))
+                .await
+            {
+                Ok(response_body) => {
+                    let result = response_body
+                        .get("result")
+                        .cloned()
+                        .unwrap_or(response_body);
+                    JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id.clone(),
+                        result: Some(result),
+                        error: None,
+                    }
+                }
+                Err(e) => self.error_response(
+                    request.id.clone(),
+                    JsonRpcError::BACKEND_ERROR,
+                    format!("Backend error: {}", e),
+                ),
+            };
+        }
+
         // Handle extension tools
         match tool_name.as_str() {
             "scp_info" => {
