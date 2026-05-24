@@ -258,12 +258,21 @@ impl Router {
     async fn handle_initialize(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
         debug!("Handling initialize request");
 
+        // Echo back the client's requested protocolVersion, defaulting to "2024-11-05"
+        let protocol_version = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("protocolVersion"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("2024-11-05")
+            .to_string();
+
         // For now, return basic capabilities (full implementation in P1.E.5)
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id.clone(),
             result: Some(json!({
-                "protocolVersion": "2025-03-26",
+                "protocolVersion": protocol_version,
                 "capabilities": {},
                 "serverInfo": {
                     "name": "scp",
