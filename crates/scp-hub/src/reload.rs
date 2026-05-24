@@ -189,6 +189,7 @@ mod tests {
             servers,
             filter: Default::default(),
             admin: AdminConfig {
+                listen_address: "127.0.0.1".to_string(),
                 port: 3101,
                 auth_token: None,
             },

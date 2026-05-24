@@ -9,7 +9,8 @@ use axum::{
     routing::{delete, get, post},
     Json, Router as AxumRouter,
 };
-use futures::stream;
+use futures::stream::{self, StreamExt};
+use std::time::Duration;
 use scp_core::config::AuthConfig;
 use scp_core::protocol::JsonRpcRequest;
 use serde_json::Value;
@@ -423,8 +424,26 @@ async fn handle_get_mcp(
 
     debug!("GET /mcp SSE stream opened for session {}", session_id);
 
-    // Create SSE stream from broadcast receiver
-    let stream = stream::unfold(
+    // Immediate keepalive comment sent right when the connection is accepted.
+    // MCP clients (e.g. opencode) time out if they receive zero bytes after
+    // the HTTP 200 response, so we flush `: ok` before waiting for any real
+    // event.
+    let initial = stream::once(async {
+        Ok::<Event, std::convert::Infallible>(Event::default().comment("ok"))
+    });
+
+    // Periodic keepalive every 15 seconds so the connection stays alive when
+    // there are no server-push events.
+    let keepalive = stream::unfold((), |()| async {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        Some((
+            Ok::<Event, std::convert::Infallible>(Event::default().comment("keepalive")),
+            (),
+        ))
+    });
+
+    // Real events from the session's outbound broadcast channel.
+    let events = stream::unfold(
         (outbound_rx, session_id.clone()),
         |(mut rx, sid)| async move {
             match rx.recv().await {
@@ -440,6 +459,10 @@ async fn handle_get_mcp(
             }
         },
     );
+
+    // Merge keepalives with real events so whichever fires first wins, then
+    // prepend the single initial keepalive.
+    let stream = initial.chain(stream::select(events, keepalive));
 
     Ok(Sse::new(stream))
 }
