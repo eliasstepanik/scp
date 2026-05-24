@@ -25,11 +25,16 @@ RUN cargo build --release -p scp-hub -p scp-cli
 # Stage 4: Runtime (minimal image)
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
+# Install runtime dependencies + Node.js for stdio MCP backends
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g \
+        @modelcontextprotocol/server-sequential-thinking \
+        @upstash/context7-mcp \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
 RUN useradd -m -u 1000 scp
