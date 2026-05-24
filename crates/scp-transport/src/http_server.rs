@@ -71,7 +71,7 @@ impl HttpServerTransport {
 
         let response = self
             .client
-            .post(format!("{}/mcp", self.url))
+            .post(&self.url)
             .headers(headers)
             .body(json_str)
             .send()
@@ -135,7 +135,7 @@ impl HttpServerTransport {
 
         let response = self
             .client
-            .post(format!("{}/mcp", self.url))
+            .post(&self.url)
             .headers(req_headers)
             .body(json_str)
             .send()
@@ -160,14 +160,39 @@ impl HttpServerTransport {
             )));
         }
 
-        let body: Value = response
-            .json()
-            .await
-            .map_err(|e| {
+        // Backends may respond with either plain JSON or SSE (text/event-stream).
+        // Detect the content-type and extract the JSON accordingly.
+        let is_sse = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(false);
+
+        if is_sse {
+            let text = response.text().await.map_err(|e| {
+                TransportError::ProcessError(format!("Failed to read SSE response: {}", e))
+            })?;
+            // Extract the first `data:` line from the SSE stream
+            let json_str = text
+                .lines()
+                .find_map(|line| line.strip_prefix("data:"))
+                .map(|s| s.trim())
+                .ok_or_else(|| {
+                    TransportError::ProcessError(
+                        "SSE response contained no data line".to_string(),
+                    )
+                })?;
+            let body: Value = serde_json::from_str(json_str).map_err(|e| {
+                TransportError::ProcessError(format!("Failed to parse SSE JSON: {}", e))
+            })?;
+            Ok(body)
+        } else {
+            let body: Value = response.json().await.map_err(|e| {
                 TransportError::ProcessError(format!("Failed to parse JSON response: {}", e))
             })?;
-
-        Ok(body)
+            Ok(body)
+        }
     }
 
     /// Receive JSON-RPC messages from the backend via GET /mcp SSE stream
@@ -219,7 +244,7 @@ impl HttpServerTransport {
 
         let response = self
             .client
-            .get(format!("{}/mcp", self.url))
+            .get(&self.url)
             .headers(headers)
             .send()
             .await
@@ -283,7 +308,7 @@ impl HttpServerTransport {
 
         let response = self
             .client
-            .delete(format!("{}/mcp", self.url))
+            .delete(&self.url)
             .headers(headers)
             .send()
             .await
