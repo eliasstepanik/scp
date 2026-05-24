@@ -283,9 +283,15 @@ fn default_relevance_engine() -> String {
 /// Admin configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
+    #[serde(default = "default_admin_listen_address")]
+    pub listen_address: String,
     #[serde(default = "default_admin_port")]
     pub port: u16,
     pub auth_token: Option<String>,
+}
+
+fn default_admin_listen_address() -> String {
+    "127.0.0.1".to_string()
 }
 
 fn default_admin_port() -> u16 {

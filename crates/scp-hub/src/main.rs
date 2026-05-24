@@ -154,6 +154,7 @@ async fn main() -> Result<()> {
         tool_registry: Some(tool_registry.clone()),
     };
 
+    let admin_listen_addr = config.admin.listen_address.clone();
     let admin_addr = config.admin.port;
     let admin_shutdown_rx = shutdown_rx.resubscribe();
     let admin_handle = tokio::spawn(async move {
@@ -162,7 +163,8 @@ async fn main() -> Result<()> {
             let _ = rx.recv().await;
         };
         if let Err(e) =
-            start_admin_api_with_shutdown("127.0.0.1", admin_addr, admin_state, shutdown).await
+            start_admin_api_with_shutdown(&admin_listen_addr, admin_addr, admin_state, shutdown)
+                .await
         {
             eprintln!("Admin API error: {}", e);
         }
