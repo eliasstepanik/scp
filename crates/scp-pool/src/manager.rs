@@ -248,6 +248,29 @@ impl PoolManager {
         Ok(())
     }
 
+    /// Get a server's config by name.
+    pub async fn get_server_config(&self, name: &str) -> Result<ServerConfig, ManagerError> {
+        let servers = self.servers.read().await;
+        servers
+            .get(name)
+            .map(|entry| entry.config.clone())
+            .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))
+    }
+
+    /// List all servers with their configs and current states.
+    pub async fn list_server_configs(
+        &self,
+    ) -> Vec<(String, ServerConfig, ServerState)> {
+        let servers = self.servers.read().await;
+        let mut result = Vec::new();
+        for (name, entry) in servers.iter() {
+            let state = entry.state.read().await;
+            result.push((name.clone(), entry.config.clone(), state.state));
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
+
     /// Health check all servers
     pub async fn health_check_all(&self) -> HashMap<String, bool> {
         let servers = self.servers.read().await;

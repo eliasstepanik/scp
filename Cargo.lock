@@ -1415,7 +1415,9 @@ name = "scp-transport"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "reqwest",
  "scp-core",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

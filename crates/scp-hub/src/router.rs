@@ -1,6 +1,7 @@
 use scp_core::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, RequestId};
-use scp_index::ToolRegistry;
+use scp_index::{ToolEntry, ToolRegistry};
 use scp_pool::PoolManager;
+use scp_transport::http_server::HttpServerTransport;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use thiserror::Error;
@@ -78,8 +79,8 @@ impl Router {
     async fn handle_tools_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
         debug!("Handling tools/list request");
 
-        // Build the list of extension tools
-        let tools = vec![
+        // SCP extension tools — always present and always first
+        let extension_tools: Vec<Value> = vec![
             json!({
                 "name": "scp_get_more",
                 "description": "Retrieve additional filtered content from a previous response",
@@ -128,14 +129,107 @@ impl Router {
             }),
         ];
 
-        // Get all servers and add their tools (for now, empty)
-        let _servers = self.pool_manager.list_servers().await;
-        // For now, return only extension tools (full implementation in P1.E.3)
+        // Fan-out to all available backend servers in parallel
+        let server_configs = self.pool_manager.list_server_configs().await;
+        let fanout_timeout = self.fanout_timeout_secs;
+
+        let mut handles = Vec::new();
+        for (server_name, config, state) in server_configs {
+            use scp_pool::lifecycle::ServerState;
+            if !matches!(state, ServerState::Warm | ServerState::Hot) {
+                continue;
+            }
+            let url = match config.url.clone() {
+                Some(u) => u,
+                None => {
+                    warn!(
+                        "Skipping stdio server {} in tools/list fan-out",
+                        server_name
+                    );
+                    continue;
+                }
+            };
+            let headers = config.headers.clone();
+            let sn = server_name.clone();
+            handles.push(tokio::spawn(async move {
+                let mut transport = HttpServerTransport::new(url, headers);
+                let req = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list",
+                    "params": {}
+                });
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(fanout_timeout),
+                    transport.send_request(&req),
+                )
+                .await;
+                (sn, result)
+            }));
+        }
+
+        let mut all_tools: Vec<Value> = extension_tools;
+        let mut registry_updates: Vec<(String, Vec<ToolEntry>)> = Vec::new();
+
+        for handle in handles {
+            if let Ok((server_name, timeout_result)) = handle.await {
+                match timeout_result {
+                    Ok(Ok(response_body)) => {
+                        let tools_array = response_body
+                            .get("result")
+                            .and_then(|r| r.get("tools"))
+                            .or_else(|| response_body.get("tools"))
+                            .and_then(|t| t.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+
+                        // Build ToolEntry list for registry
+                        let entries: Vec<ToolEntry> = tools_array
+                            .iter()
+                            .filter_map(|tool| {
+                                let name = tool.get("name")?.as_str()?.to_string();
+                                Some(ToolEntry {
+                                    original_name: name.clone(),
+                                    qualified_name: format!("{}.{}", server_name, name),
+                                    server_name: server_name.clone(),
+                                    description: tool
+                                        .get("description")
+                                        .and_then(|d| d.as_str())
+                                        .map(|s| s.to_string()),
+                                    input_schema: tool
+                                        .get("inputSchema")
+                                        .cloned()
+                                        .unwrap_or(json!({})),
+                                    tags: vec![],
+                                    avg_response_tokens: 0.0,
+                                    call_count: 0,
+                                })
+                            })
+                            .collect();
+
+                        registry_updates.push((server_name, entries));
+                        all_tools.extend(tools_array);
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Backend {} tools/list error: {}", server_name, e)
+                    }
+                    Err(_) => warn!("Backend {} tools/list timed out", server_name),
+                }
+            }
+        }
+
+        // Update the tool registry with discovered tools
+        {
+            let mut registry = self.tool_registry.write().await;
+            for (server_name, entries) in registry_updates {
+                registry.rebuild_for_server(&server_name, entries);
+            }
+        }
 
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id.clone(),
-            result: Some(json!({ "tools": tools })),
+            result: Some(json!({ "tools": all_tools })),
             error: None,
         }
     }
@@ -233,15 +327,33 @@ impl Router {
         // Lookup tool in registry
         let registry = self.tool_registry.read().await;
         match registry.lookup(&tool_name) {
-            Some(_tool_entry) => {
+            Some(tool_entry) => {
+                let server_name = tool_entry.server_name.clone();
                 drop(registry);
 
-                // For now, return error (full implementation in P1.E.2)
-                self.error_response(
-                    request.id.clone(),
-                    JsonRpcError::BACKEND_ERROR,
-                    "Server not available",
-                )
+                match self
+                    .call_backend(&server_name, "tools/call", request.params.clone())
+                    .await
+                {
+                    Ok(response_body) => {
+                        // Unwrap the JSON-RPC result wrapper if present
+                        let result = response_body
+                            .get("result")
+                            .cloned()
+                            .unwrap_or(response_body);
+                        JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id.clone(),
+                            result: Some(result),
+                            error: None,
+                        }
+                    }
+                    Err(e) => self.error_response(
+                        request.id.clone(),
+                        JsonRpcError::BACKEND_ERROR,
+                        format!("Backend call failed: {}", e),
+                    ),
+                }
             }
             None => {
                 drop(registry);
@@ -252,6 +364,45 @@ impl Router {
                 )
             }
         }
+    }
+
+    /// Route a request to a specific backend server via HTTP.
+    async fn call_backend(
+        &self,
+        server_name: &str,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, RouterError> {
+        let config = self
+            .pool_manager
+            .get_server_config(server_name)
+            .await
+            .map_err(|_| RouterError::ServerNotFound(server_name.to_string()))?;
+
+        let url = config.url.ok_or_else(|| {
+            RouterError::PoolError(format!("Server {} has no HTTP URL", server_name))
+        })?;
+
+        let mut transport = HttpServerTransport::new(url, config.headers);
+
+        let req_value = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params.unwrap_or(json!({}))
+        });
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(self.fanout_timeout_secs),
+            transport.send_request(&req_value),
+        )
+        .await
+        .map_err(|_| {
+            RouterError::PoolError(format!("Timeout calling backend {}", server_name))
+        })?
+        .map_err(|e| RouterError::PoolError(e.to_string()))?;
+
+        Ok(response)
     }
 
     /// Handle initialize request (fan-out to all servers)

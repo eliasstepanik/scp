@@ -152,6 +152,7 @@ async fn main() -> Result<()> {
         auth_token: config.admin.auth_token.clone(),
         session_store: Some(session_store.clone()),
         tool_registry: Some(tool_registry.clone()),
+        config_path: Some(args.config.clone()),
     };
 
     let admin_listen_addr = config.admin.listen_address.clone();

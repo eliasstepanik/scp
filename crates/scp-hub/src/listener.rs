@@ -12,7 +12,7 @@ use axum::{
 use futures::stream::{self, StreamExt};
 use std::time::Duration;
 use scp_core::config::AuthConfig;
-use scp_core::protocol::JsonRpcRequest;
+use scp_core::protocol::{IncomingMessage, JsonRpcRequest};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -287,9 +287,49 @@ async fn handle_post_mcp(
 
     debug!("POST /mcp for session {}: {}", session_id, msg);
 
-    // Parse as JSON-RPC request
-    let request: scp_core::protocol::JsonRpcRequest = serde_json::from_value(msg.clone())
+    // Parse as IncomingMessage to distinguish requests from notifications
+    let incoming: IncomingMessage = serde_json::from_value(msg.clone())
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON-RPC: {}", e)))?;
+
+    // Short-circuit notifications — return 202 with no routing (no WARN log)
+    if let IncomingMessage::Notification(_) = &incoming {
+        let mut notif_headers = HeaderMap::new();
+        notif_headers.insert(
+            header::CONTENT_TYPE,
+            "application/json".parse().map_err(|_| {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid content type".to_string())
+            })?,
+        );
+        notif_headers.insert(
+            "Mcp-Session-Id",
+            session_id.parse().map_err(|_| {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid session ID".to_string())
+            })?,
+        );
+        notif_headers.insert(
+            "X-SCP-RateLimit-Remaining",
+            rate_limit_remaining.to_string().parse().map_err(|_| {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid rate limit remaining header".to_string())
+            })?,
+        );
+        notif_headers.insert(
+            "X-SCP-RateLimit-Reset",
+            rate_limit_reset.to_string().parse().map_err(|_| {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid rate limit reset header".to_string())
+            })?,
+        );
+        return Ok((StatusCode::ACCEPTED, notif_headers, String::new()));
+    }
+
+    // Extract the request (we know it's not a Notification at this point)
+    let request: JsonRpcRequest = match incoming {
+        IncomingMessage::Request(r) => r,
+        // Response messages are not expected from clients — treat as error
+        IncomingMessage::Response(_) => {
+            return Err((StatusCode::BAD_REQUEST, "Unexpected JSON-RPC Response from client".to_string()));
+        }
+        IncomingMessage::Notification(_) => unreachable!(),
+    };
 
     // Route message to backend via Router
     let response = state.router.route(request).await;

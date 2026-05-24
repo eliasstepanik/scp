@@ -29,6 +29,8 @@ pub struct AdminState {
     pub session_store: Option<Arc<SessionStore>>,
     /// Optional tool registry.
     pub tool_registry: Option<Arc<RwLock<ToolRegistry>>>,
+    /// Optional path to the config file for hot-reload.
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 /// Health response.
@@ -108,7 +110,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/servers/:name/enable", post(enable_server_handler))
         .route("/config/reload", post(reload_config_handler))
         .route("/admin/sessions", get(list_sessions_handler))
-        .route("/admin/sessions/:id", delete(delete_session_handler))
+        .route(
+            "/admin/sessions/:id",
+            get(get_session_handler).delete(delete_session_handler),
+        )
         .route("/tools", get(list_tools_handler))
         .route("/admin/metrics", get(metrics_handler))
         .route("/metrics", get(prometheus_metrics_handler))
@@ -241,12 +246,65 @@ async fn enable_server_handler(
 }
 
 /// POST /config/reload
-async fn reload_config_handler(State(_state): State<AdminState>) -> impl IntoResponse {
-    // Placeholder for config reload (implemented in P1.I)
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status": "ok", "message": "Config reload not yet implemented"})),
-    )
+async fn reload_config_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    let Some(ref config_path) = state.config_path else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(serde_json::json!({"error": "Config path not configured"})),
+        )
+            .into_response();
+    };
+
+    match scp_core::config::load_config(config_path) {
+        Ok(new_config) => {
+            // Add new servers that aren't currently registered (add_server is idempotent — it
+            // returns ServerAlreadyExists for duplicates, which we silently ignore)
+            for server_cfg in &new_config.servers {
+                if server_cfg.enabled {
+                    let _ = state.server_manager.add_server(server_cfg.clone()).await;
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ok"})),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Failed to reload config: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /admin/sessions/:id
+async fn get_session_handler(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(session_store) = &state.session_store {
+        let sessions = session_store.list().await;
+        if let Some(session) = sessions.into_iter().find(|s| s.id == id) {
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(session).unwrap_or(serde_json::json!({}))),
+            )
+                .into_response()
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Session not found"})),
+            )
+                .into_response()
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Session store unavailable"})),
+        )
+            .into_response()
+    }
 }
 
 /// GET /admin/sessions (P2.L)
@@ -443,6 +501,7 @@ mod tests {
             auth_token: None,
             session_store: None,
             tool_registry: None,
+            config_path: None,
         };
 
         let params = HashMap::new();
@@ -472,6 +531,7 @@ mod tests {
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
+            config_path: None,
         };
 
         let params = HashMap::new();
@@ -504,6 +564,7 @@ mod tests {
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
+            config_path: None,
         };
 
         let mut params = HashMap::new();
@@ -537,6 +598,7 @@ mod tests {
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
+            config_path: None,
         };
 
         let mut params = HashMap::new();
@@ -569,6 +631,7 @@ mod tests {
             auth_token: None,
             session_store: None,
             tool_registry: Some(Arc::new(RwLock::new(registry))),
+            config_path: None,
         };
 
         let mut params = HashMap::new();

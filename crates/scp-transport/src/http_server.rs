@@ -90,6 +90,86 @@ impl HttpServerTransport {
         Ok(())
     }
 
+    /// Send a JSON-RPC request and return the parsed JSON response body.
+    pub async fn send_request(&mut self, msg: &Value) -> Result<Value, TransportError> {
+        let json_str = serde_json::to_string(msg)
+            .map_err(|e| TransportError::InvalidMessage(e.to_string()))?;
+
+        let mut req_headers = reqwest::header::HeaderMap::new();
+        req_headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json".parse().map_err(|_| {
+                TransportError::InvalidMessage("Failed to parse content-type header".to_string())
+            })?,
+        );
+        req_headers.insert(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream".parse().map_err(|_| {
+                TransportError::InvalidMessage("Failed to parse accept header".to_string())
+            })?,
+        );
+
+        // Add custom headers
+        for (key, value) in &self.headers {
+            if let (Ok(name), Ok(val)) = (
+                reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+                reqwest::header::HeaderValue::from_str(value),
+            ) {
+                req_headers.insert(name, val);
+            }
+        }
+
+        // Add session ID header if set
+        if let Some(session_id) = &self.session_id {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(session_id) {
+                req_headers.insert(
+                    reqwest::header::HeaderName::from_bytes(b"Mcp-Session-Id").map_err(|_| {
+                        TransportError::InvalidMessage(
+                            "Failed to create session ID header".to_string(),
+                        )
+                    })?,
+                    val,
+                );
+            }
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/mcp", self.url))
+            .headers(req_headers)
+            .body(json_str)
+            .send()
+            .await
+            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {}", e)))?;
+
+        // Capture session ID from response if not yet set
+        if self.session_id.is_none() {
+            if let Some(sid) = response.headers().get("Mcp-Session-Id") {
+                if let Ok(s) = sid.to_str() {
+                    self.session_id = Some(s.to_string());
+                }
+            }
+        }
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(TransportError::ProcessError(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown")
+            )));
+        }
+
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| {
+                TransportError::ProcessError(format!("Failed to parse JSON response: {}", e))
+            })?;
+
+        Ok(body)
+    }
+
     /// Receive JSON-RPC messages from the backend via GET /mcp SSE stream
     pub async fn receive(&mut self) -> Result<Option<IncomingMessage>, TransportError> {
         loop {
