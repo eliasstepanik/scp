@@ -137,48 +137,74 @@ impl Router {
         let server_configs = self.pool_manager.list_server_configs().await;
         let fanout_timeout = self.fanout_timeout_secs;
 
-        let mut handles = Vec::new();
+        // Each handle resolves to (server_name, Result<response_body, error_string>)
+        let mut handles: Vec<tokio::task::JoinHandle<(String, Result<Value, String>)>> = Vec::new();
         for (server_name, config, state) in server_configs {
             use scp_pool::lifecycle::ServerState;
             if !matches!(state, ServerState::Warm | ServerState::Hot) {
                 continue;
             }
-            let url = match config.url.clone() {
-                Some(u) => u,
-                None => {
-                    warn!(
-                        "Skipping stdio server {} in tools/list fan-out",
-                        server_name
-                    );
-                    continue;
-                }
-            };
-            let headers = config.headers.clone();
-            let sn = server_name.clone();
-            handles.push(tokio::spawn(async move {
-                let mut transport = HttpServerTransport::new(url, headers);
-                let req = json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/list",
-                    "params": {}
-                });
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(fanout_timeout),
-                    transport.send_request(&req),
-                )
-                .await;
-                (sn, result)
-            }));
+
+            if let Some(url) = config.url.clone() {
+                // HTTP backend
+                let headers = config.headers.clone();
+                let sn = server_name.clone();
+                handles.push(tokio::spawn(async move {
+                    let mut transport = HttpServerTransport::new(url, headers);
+                    let req = json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/list",
+                        "params": {}
+                    });
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(fanout_timeout),
+                        transport.send_request(&req),
+                    )
+                    .await
+                    {
+                        Ok(Ok(body)) => (sn, Ok(body)),
+                        Ok(Err(e)) => (sn, Err(e.to_string())),
+                        Err(_) => (sn, Err("timeout".to_string())),
+                    }
+                }));
+            } else if config.command.is_some() {
+                // stdio backend — use shared pool
+                let pool_manager_clone = self.pool_manager.clone();
+                let sn = server_name.clone();
+                handles.push(tokio::spawn(async move {
+                    match pool_manager_clone.get_pool(&sn).await {
+                        Ok(pool) => {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(fanout_timeout),
+                                pool.call("tools/list", None),
+                            )
+                            .await
+                            {
+                                Ok(Ok(value)) => {
+                                    // Wrap in a pseudo-HTTP response envelope so the
+                                    // existing result-extraction logic works unchanged.
+                                    (sn, Ok(json!({ "result": value })))
+                                }
+                                Ok(Err(e)) => (sn, Err(e.to_string())),
+                                Err(_) => (sn, Err("timeout".to_string())),
+                            }
+                        }
+                        Err(e) => (sn, Err(e.to_string())),
+                    }
+                }));
+            } else {
+                warn!("Skipping server {} — no url and no command", server_name);
+            }
         }
 
         let mut all_tools: Vec<Value> = extension_tools;
         let mut registry_updates: Vec<(String, Vec<ToolEntry>)> = Vec::new();
 
         for handle in handles {
-            if let Ok((server_name, timeout_result)) = handle.await {
-                match timeout_result {
-                    Ok(Ok(response_body)) => {
+            if let Ok((server_name, result)) = handle.await {
+                match result {
+                    Ok(response_body) => {
                         let tools_array = response_body
                             .get("result")
                             .and_then(|r| r.get("tools"))
@@ -214,10 +240,9 @@ impl Router {
                         registry_updates.push((server_name, entries));
                         all_tools.extend(tools_array);
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         warn!("Backend {} tools/list error: {}", server_name, e)
                     }
-                    Err(_) => warn!("Backend {} tools/list timed out", server_name),
                 }
             }
         }
@@ -370,7 +395,7 @@ impl Router {
         }
     }
 
-    /// Route a request to a specific backend server via HTTP.
+    /// Route a request to a specific backend server (HTTP or stdio).
     async fn call_backend(
         &self,
         server_name: &str,
@@ -383,28 +408,54 @@ impl Router {
             .await
             .map_err(|_| RouterError::ServerNotFound(server_name.to_string()))?;
 
-        let url = config.url.ok_or_else(|| {
-            RouterError::PoolError(format!("Server {} has no HTTP URL", server_name))
-        })?;
+        if let Some(url) = config.url {
+            // HTTP backend
+            let mut transport = HttpServerTransport::new(url, config.headers);
 
-        let mut transport = HttpServerTransport::new(url, config.headers);
+            let req_value = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params.unwrap_or(json!({}))
+            });
 
-        let req_value = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params.unwrap_or(json!({}))
-        });
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(self.fanout_timeout_secs),
+                transport.send_request(&req_value),
+            )
+            .await
+            .map_err(|_| {
+                RouterError::PoolError(format!("Timeout calling backend {}", server_name))
+            })?
+            .map_err(|e| RouterError::PoolError(e.to_string()))?;
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(self.fanout_timeout_secs),
-            transport.send_request(&req_value),
-        )
-        .await
-        .map_err(|_| RouterError::PoolError(format!("Timeout calling backend {}", server_name)))?
-        .map_err(|e| RouterError::PoolError(e.to_string()))?;
+            Ok(response)
+        } else if config.command.is_some() {
+            // stdio backend — use shared pool
+            let pool = self
+                .pool_manager
+                .get_pool(server_name)
+                .await
+                .map_err(|e| RouterError::PoolError(e.to_string()))?;
 
-        Ok(response)
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(self.fanout_timeout_secs),
+                pool.call(method, params),
+            )
+            .await
+            .map_err(|_| {
+                RouterError::PoolError(format!("Timeout calling backend {}", server_name))
+            })?
+            .map_err(|e| RouterError::PoolError(e.to_string()))?;
+
+            // Wrap result to match HTTP response shape expected by callers
+            Ok(json!({ "result": result }))
+        } else {
+            Err(RouterError::PoolError(format!(
+                "Server {} has no url and no command",
+                server_name
+            )))
+        }
     }
 
     /// Handle initialize request (fan-out to all servers)

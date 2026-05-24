@@ -1,12 +1,13 @@
 use crate::lifecycle::{LifecycleInfo, ServerState};
 use crate::shared::SharedPool;
 use scp_core::config::ServerConfig;
+use scp_transport::stdio_server::StdioServerTransport;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{error, info};
 
 /// Pool manager error types
 #[derive(Debug, Error)]
@@ -114,22 +115,77 @@ impl PoolManager {
 
     /// Start a server
     pub async fn start_server(&self, name: &str) -> Result<(), ManagerError> {
-        let servers = self.servers.read().await;
-        let entry = servers
-            .get(name)
-            .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
+        // Read config and current state under a read lock, then release it
+        let (config, state_arc) = {
+            let servers = self.servers.read().await;
+            let entry = servers
+                .get(name)
+                .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
+            (entry.config.clone(), entry.state.clone())
+        };
 
         // Update state to Starting
         {
-            let mut state = entry.state.write().await;
+            let mut state = state_arc.write().await;
             state.transition_to(ServerState::Starting);
         }
 
         info!("Starting server: {}", name);
 
-        // For now, just transition to Warm (actual connection happens in P1.B)
-        {
-            let mut state = entry.state.write().await;
+        if config.transport == "stdio" {
+            let command = config.command.as_deref().ok_or_else(|| {
+                ManagerError::InvalidConfig("stdio transport requires command".to_string())
+            })?;
+
+            // Substitute {env:VAR} placeholders in args
+            let args: Vec<String> = config
+                .args
+                .iter()
+                .map(|a| substitute_env_placeholders(a))
+                .collect();
+
+            // Build env map from config.env, substituting placeholders
+            let env: HashMap<String, String> = config
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), substitute_env_placeholders(v)))
+                .collect();
+
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+            match StdioServerTransport::spawn(command, &args_ref, &env).await {
+                Ok(transport) => {
+                    let pool = Arc::new(SharedPool::new(transport));
+                    let pool_for_loop = pool.clone();
+
+                    let receive_handle = tokio::spawn(async move {
+                        if let Err(e) = pool_for_loop.receive_loop().await {
+                            error!("receive_loop exited: {}", e);
+                        }
+                    });
+
+                    // Store pool and handle under write lock
+                    {
+                        let mut servers = self.servers.write().await;
+                        if let Some(entry) = servers.get_mut(name) {
+                            entry.pool = Some(pool);
+                            entry.health_check_handle = Some(receive_handle);
+                        }
+                    }
+
+                    let mut state = state_arc.write().await;
+                    state.transition_to(ServerState::Warm);
+                }
+                Err(e) => {
+                    error!("Failed to spawn stdio server {}: {}", name, e);
+                    let mut state = state_arc.write().await;
+                    state.transition_to(ServerState::Cold);
+                    return Err(ManagerError::TransportError(e.to_string()));
+                }
+            }
+        } else {
+            // HTTP backends — no pool needed (transports are created per-request)
+            let mut state = state_arc.write().await;
             state.transition_to(ServerState::Warm);
         }
 
@@ -289,6 +345,25 @@ impl Default for PoolManager {
     }
 }
 
+/// Substitute `{env:VAR}` placeholders with actual environment variable values.
+/// Unresolved placeholders are left as-is (no error).
+fn substitute_env_placeholders(s: &str) -> String {
+    let mut result = s.to_string();
+    // Simple scan for {env:VAR_NAME} patterns
+    while let Some(start) = result.find("{env:") {
+        let rest = &result[start + 5..];
+        if let Some(end) = rest.find('}') {
+            let var_name = &rest[..end];
+            let value = std::env::var(var_name).unwrap_or_default();
+            let placeholder = format!("{{env:{}}}", var_name);
+            result = result.replacen(&placeholder, &value, 1);
+        } else {
+            break;
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,11 +378,21 @@ mod tests {
     #[tokio::test]
     async fn test_add_server() {
         let manager = PoolManager::new();
+        // Use a real executable that exists on all platforms.
+        // On Windows `echo` is a shell built-in, so we route through cmd.
+        #[cfg(windows)]
+        let (cmd, args): (&str, Vec<String>) = (
+            "cmd",
+            vec!["/c".to_string(), "echo".to_string(), "hello".to_string()],
+        );
+        #[cfg(not(windows))]
+        let (cmd, args): (&str, Vec<String>) = ("echo", vec!["hello".to_string()]);
+
         let config = ServerConfig {
             name: "test".to_string(),
             transport: "stdio".to_string(),
-            command: Some("echo".to_string()),
-            args: vec![],
+            command: Some(cmd.to_string()),
+            args,
             url: None,
             sharing: "shared".to_string(),
             pool_size: None,
@@ -332,11 +417,19 @@ mod tests {
     #[tokio::test]
     async fn test_disable_enable_server() {
         let manager = PoolManager::new();
+        #[cfg(windows)]
+        let (cmd, args): (&str, Vec<String>) = (
+            "cmd",
+            vec!["/c".to_string(), "echo".to_string(), "hello".to_string()],
+        );
+        #[cfg(not(windows))]
+        let (cmd, args): (&str, Vec<String>) = ("echo", vec!["hello".to_string()]);
+
         let config = ServerConfig {
             name: "test".to_string(),
             transport: "stdio".to_string(),
-            command: Some("echo".to_string()),
-            args: vec![],
+            command: Some(cmd.to_string()),
+            args,
             url: None,
             sharing: "shared".to_string(),
             pool_size: None,

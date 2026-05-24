@@ -196,11 +196,20 @@ mod tests {
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
         let manager = ServerManager::new(pool_manager, tool_registry);
 
+        // On Windows `echo` is a shell built-in; route through cmd.
+        #[cfg(windows)]
+        let (cmd, args): (&str, Vec<String>) = (
+            "cmd",
+            vec!["/c".to_string(), "echo".to_string(), "hello".to_string()],
+        );
+        #[cfg(not(windows))]
+        let (cmd, args): (&str, Vec<String>) = ("echo", vec!["hello".to_string()]);
+
         let config = ServerConfig {
             name: "test".to_string(),
             transport: "stdio".to_string(),
-            command: Some("echo".to_string()),
-            args: vec![],
+            command: Some(cmd.to_string()),
+            args,
             url: None,
             sharing: "shared".to_string(),
             pool_size: None,
