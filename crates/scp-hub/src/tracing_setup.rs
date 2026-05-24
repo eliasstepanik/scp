@@ -23,24 +23,24 @@ pub fn init_tracing(format: TracingFormat, level: &str) {
 
     match format {
         TracingFormat::Json => {
-            tracing_subscriber::registry()
+            let _ = tracing_subscriber::registry()
                 .with(env_filter)
                 .with(
                     tracing_subscriber::fmt::layer()
                         .json()
                         .with_span_events(FmtSpan::CLOSE),
                 )
-                .init();
+                .try_init();
         }
         TracingFormat::Pretty => {
-            tracing_subscriber::registry()
+            let _ = tracing_subscriber::registry()
                 .with(env_filter)
                 .with(
                     tracing_subscriber::fmt::layer()
                         .pretty()
                         .with_span_events(FmtSpan::CLOSE),
                 )
-                .init();
+                .try_init();
         }
     }
 }
@@ -51,22 +51,22 @@ pub fn init_tracing_from_config(config: &LoggingConfig) {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.level));
 
     if config.format == "json" {
-        tracing_subscriber::registry()
+        let _ = tracing_subscriber::registry()
             .with(env_filter)
             .with(
                 tracing_subscriber::fmt::layer()
                     .json()
                     .with_span_events(FmtSpan::CLOSE),
             )
-            .init();
+            .try_init();
     } else {
-        tracing_subscriber::registry()
+        let _ = tracing_subscriber::registry()
             .with(env_filter)
             .with(
                 tracing_subscriber::fmt::layer()
                     .pretty()
                     .with_span_events(FmtSpan::CLOSE),
             )
-            .init();
+            .try_init();
     }
 }
