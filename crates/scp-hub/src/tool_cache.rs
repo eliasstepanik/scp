@@ -18,6 +18,7 @@ impl CacheEntry {
 }
 
 /// Per-server cache for tools with TTL-based expiry.
+#[allow(dead_code)]
 pub struct ToolCache {
     /// Cached entries by server name.
     entries: HashMap<String, CacheEntry>,
@@ -27,6 +28,7 @@ pub struct ToolCache {
 
 impl ToolCache {
     /// Create a new tool cache with the specified TTL in seconds
+    #[allow(dead_code)]
     pub fn new(ttl_secs: u64) -> Self {
         Self {
             entries: HashMap::new(),
@@ -35,6 +37,7 @@ impl ToolCache {
     }
 
     /// Returns cached tools if not expired, None if cache miss or expired
+    #[allow(dead_code)]
     pub fn get(&self, server_name: &str) -> Option<Vec<ToolEntry>> {
         if let Some(entry) = self.entries.get(server_name) {
             if !entry.is_expired(self.ttl) {
@@ -45,6 +48,7 @@ impl ToolCache {
     }
 
     /// Stores tools for a server, resets TTL
+    #[allow(dead_code)]
     pub fn set(&mut self, server_name: &str, tools: Vec<ToolEntry>) {
         self.entries.insert(
             server_name.to_string(),
@@ -56,6 +60,7 @@ impl ToolCache {
     }
 
     /// Invalidates a specific server's cache (called on list_changed notification)
+    #[allow(dead_code)]
     pub fn invalidate(&mut self, server_name: &str) {
         self.entries.remove(server_name);
     }

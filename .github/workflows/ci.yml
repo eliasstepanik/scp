@@ -28,8 +28,8 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace --lib
 
-      - name: Build mock-mcp-server
-        run: cargo build --bin mock-mcp-server
+      - name: Build scp-hub and mock-mcp-server
+        run: cargo build --bin scp-hub --bin mock-mcp-server
 
       - name: Run integration tests
         run: cargo test --package scp-tests

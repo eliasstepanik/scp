@@ -1,4 +1,4 @@
-use scp_core::protocol::{JsonRpcRequest, RequestId};
+﻿use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_tests::HttpTestHub;
 use serde_json::json;
 
@@ -24,7 +24,7 @@ async fn test_missing_bearer_token_rejected() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .json(&init_req)
         .send()
         .await
@@ -61,7 +61,7 @@ async fn test_invalid_bearer_token_rejected() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", "Bearer wrong-token")
         .json(&init_req)
         .send()
@@ -99,7 +99,7 @@ async fn test_valid_bearer_token_accepted() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -128,7 +128,7 @@ async fn test_rate_limit_exceeded() {
         let req = JsonRpcRequest::new(RequestId::Number(i), "ping".to_string(), None);
 
         let response = client
-            .post(&hub.mcp_url())
+            .post(hub.mcp_url())
             .header("Authorization", &hub.auth_header())
             .json(&req)
             .send()
@@ -175,7 +175,7 @@ async fn test_rate_limit_headers_present() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()

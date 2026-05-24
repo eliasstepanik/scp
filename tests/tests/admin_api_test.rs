@@ -1,4 +1,4 @@
-use scp_tests::HttpTestHub;
+﻿use scp_tests::HttpTestHub;
 
 /// Test that admin health endpoint works
 #[tokio::test]
@@ -8,7 +8,7 @@ async fn test_admin_health_endpoint() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/health", hub.admin_url()))
+        .get(format!("{}/health", hub.admin_url()))
         .send()
         .await
         .expect("Failed to send request");
@@ -33,7 +33,7 @@ async fn test_admin_list_servers() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/servers", hub.admin_url()))
+        .get(format!("{}/servers", hub.admin_url()))
         .send()
         .await
         .expect("Failed to send request");
@@ -46,7 +46,7 @@ async fn test_admin_list_servers() {
     let servers = body.get("servers").unwrap().as_array().unwrap();
 
     // Should have at least the mock server
-    assert!(servers.len() > 0);
+    assert!(!servers.is_empty());
 
     // Check that mock server is in the list
     let mock_server = servers.iter().find(|s| {
@@ -68,7 +68,7 @@ async fn test_admin_list_sessions() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/admin/sessions", hub.admin_url()))
+        .get(format!("{}/admin/sessions", hub.admin_url()))
         .send()
         .await
         .expect("Failed to send request");
@@ -92,7 +92,7 @@ async fn test_admin_disable_enable_server() {
 
     // Disable the mock server
     let disable_response = client
-        .post(&format!("{}/servers/mock/disable", hub.admin_url()))
+        .post(format!("{}/servers/mock/disable", hub.admin_url()))
         .send()
         .await
         .expect("Failed to send disable request");
@@ -101,7 +101,7 @@ async fn test_admin_disable_enable_server() {
 
     // Enable the mock server
     let enable_response = client
-        .post(&format!("{}/servers/mock/enable", hub.admin_url()))
+        .post(format!("{}/servers/mock/enable", hub.admin_url()))
         .send()
         .await
         .expect("Failed to send enable request");
@@ -119,7 +119,7 @@ async fn test_admin_config_reload() {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(&format!("{}/config/reload", hub.admin_url()))
+        .post(format!("{}/config/reload", hub.admin_url()))
         .send()
         .await
         .expect("Failed to send request");
@@ -137,7 +137,7 @@ async fn test_admin_prometheus_metrics() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/metrics", hub.admin_url()))
+        .get(format!("{}/metrics", hub.admin_url()))
         .send()
         .await
         .expect("Failed to send request");
@@ -147,7 +147,7 @@ async fn test_admin_prometheus_metrics() {
     let body = response.text().await.expect("Failed to read response body");
 
     // Prometheus metrics should contain TYPE and HELP comments
-    assert!(body.contains("# HELP") || body.contains("# TYPE") || body.len() > 0);
+    assert!(body.contains("# HELP") || body.contains("# TYPE") || !body.is_empty());
 
     hub.kill().ok();
 }

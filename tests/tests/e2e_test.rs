@@ -19,7 +19,7 @@ async fn test_full_hub_lifecycle() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
 
     // Create router (the core hub component)
     let router = Arc::new(Router::new(
@@ -124,7 +124,7 @@ async fn test_tool_call_proxied_through_filter() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
 
     let router = Arc::new(Router::new(
         pool_manager.clone(),

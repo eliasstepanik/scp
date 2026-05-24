@@ -11,3 +11,6 @@ scp-index = { path = "../scp-index" }
 sha2 = { workspace = true }
 log = { workspace = true }
 reqwest = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }

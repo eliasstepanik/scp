@@ -39,7 +39,7 @@ mod tests {
     fn test_count_tokens_ascii() {
         // "Hello, World!" = 13 bytes / 3.5 ≈ 4 tokens
         let tokens = count_tokens("Hello, World!");
-        assert!(tokens >= 3 && tokens <= 5);
+        assert!((3..=5).contains(&tokens));
     }
 
     #[test]
@@ -56,7 +56,7 @@ mod tests {
         let cjk = "你好世界";
         let tokens = count_tokens(cjk);
         // 12 bytes / 2.5 ≈ 5 tokens
-        assert!(tokens >= 4 && tokens <= 6);
+        assert!((4..=6).contains(&tokens));
     }
 
     #[test]

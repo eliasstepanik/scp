@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 /// - `scp_info`: Get information about the SCP hub
 /// - `scp_budget`: Get the current token budget status
 /// - `scp_budget_reset`: Reset the session token budget
+#[allow(dead_code)]
 pub fn scp_extension_tools() -> Vec<Value> {
     vec![
         json!({

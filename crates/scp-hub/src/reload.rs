@@ -10,12 +10,15 @@ use tracing::{error, info};
 #[allow(dead_code)]
 pub enum ReloadError {
     #[error("Config error: {0}")]
+    /// Configuration file could not be loaded or parsed.
     ConfigError(#[from] ConfigError),
 
     #[error("Reload already in progress")]
+    /// A reload operation is already running; concurrent reloads are not allowed.
     AlreadyReloading,
 
     #[error("Internal error: {0}")]
+    /// An unexpected internal error occurred during reload.
     Internal(String),
 }
 
@@ -23,9 +26,13 @@ pub enum ReloadError {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ReloadResult {
+    /// Server names that were added by the new configuration.
     pub added: Vec<String>,
+    /// Server names that were removed by the new configuration.
     pub removed: Vec<String>,
+    /// Server names whose configuration changed.
     pub updated: Vec<String>,
+    /// Server names whose configuration is identical to the previous one.
     pub unchanged: Vec<String>,
 }
 

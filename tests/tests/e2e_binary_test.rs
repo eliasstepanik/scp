@@ -1,4 +1,4 @@
-use scp_core::protocol::{JsonRpcRequest, RequestId};
+﻿use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_tests::HttpTestHub;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ async fn test_hub_starts_and_serves_http() {
 
     while start.elapsed() < timeout {
         match client
-            .get(&format!("{}/health", hub.admin_url()))
+            .get(format!("{}/health", hub.admin_url()))
             .send()
             .await
         {
@@ -57,7 +57,7 @@ async fn test_hub_mcp_initialize() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -103,7 +103,7 @@ async fn test_hub_mcp_tools_list() {
     );
 
     let _init_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -114,7 +114,7 @@ async fn test_hub_mcp_tools_list() {
     let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&list_req)
         .send()
@@ -182,7 +182,7 @@ async fn test_hub_extension_tool_scp_info() {
     );
 
     let _init_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -200,7 +200,7 @@ async fn test_hub_extension_tool_scp_info() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&call_req)
         .send()

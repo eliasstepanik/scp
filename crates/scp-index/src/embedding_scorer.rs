@@ -174,7 +174,7 @@ mod tests {
     fn test_score_tools_sorted_by_score() {
         // This test verifies the sorting logic without needing actual embeddings
         // We'll test the sorting by creating mock results
-        let mut results = vec![
+        let mut results = [
             ("tool1".to_string(), 0.5),
             ("tool2".to_string(), 0.9),
             ("tool3".to_string(), 0.3),
@@ -191,8 +191,10 @@ mod tests {
     #[tokio::test]
     async fn test_fallback_on_unavailable_endpoint() {
         // Create config with bad endpoint URL (unlikely to have anything listening)
-        let mut config = EmbeddingConfig::default();
-        config.endpoint = "http://127.0.0.1:19999/api/embed".to_string();
+        let config = EmbeddingConfig {
+            endpoint: "http://127.0.0.1:19999/api/embed".to_string(),
+            ..Default::default()
+        };
 
         let scorer = EmbeddingToolScorer::new(&config);
 

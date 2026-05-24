@@ -181,8 +181,10 @@ mod tests {
     #[tokio::test]
     async fn test_fallback_to_keyword_on_unavailable() {
         // Create config with bad endpoint URL (unlikely to have anything listening)
-        let mut config = EmbeddingConfig::default();
-        config.endpoint = "http://127.0.0.1:19999/api/embed".to_string();
+        let config = EmbeddingConfig {
+            endpoint: "http://127.0.0.1:19999/api/embed".to_string(),
+            ..Default::default()
+        };
 
         let scorer = EmbeddingChunkScorer::new(&config);
 

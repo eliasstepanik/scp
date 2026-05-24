@@ -13,15 +13,19 @@ use tracing::{debug, warn};
 #[allow(dead_code)]
 pub enum RouterError {
     #[error("Tool not found: {0}")]
+    /// The requested tool name is not registered in the tool registry.
     ToolNotFound(String),
 
     #[error("Server not found: {0}")]
+    /// The target backend server is not known to the pool manager.
     ServerNotFound(String),
 
     #[error("Pool error: {0}")]
+    /// An error occurred when communicating with the connection pool or backend.
     PoolError(String),
 
     #[error("Invalid request: {0}")]
+    /// The incoming JSON-RPC request is malformed or missing required fields.
     InvalidRequest(String),
 }
 
@@ -397,9 +401,7 @@ impl Router {
             transport.send_request(&req_value),
         )
         .await
-        .map_err(|_| {
-            RouterError::PoolError(format!("Timeout calling backend {}", server_name))
-        })?
+        .map_err(|_| RouterError::PoolError(format!("Timeout calling backend {}", server_name)))?
         .map_err(|e| RouterError::PoolError(e.to_string()))?;
 
         Ok(response)

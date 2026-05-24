@@ -1,4 +1,4 @@
-use scp_core::protocol::{JsonRpcRequest, RequestId};
+﻿use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_tests::HttpTestHub;
 use serde_json::json;
 
@@ -24,7 +24,7 @@ async fn test_initialize_handshake() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -73,7 +73,7 @@ async fn test_tools_list_passthrough() {
     );
 
     let _init_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -84,7 +84,7 @@ async fn test_tools_list_passthrough() {
     let tools_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&tools_req)
         .send()
@@ -127,7 +127,7 @@ async fn test_tools_call_passthrough() {
     );
 
     let _init_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -138,7 +138,7 @@ async fn test_tools_call_passthrough() {
     let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
 
     let list_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&list_req)
         .send()
@@ -183,7 +183,7 @@ async fn test_tools_call_passthrough() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&call_req)
         .send()
@@ -241,7 +241,7 @@ async fn test_ping_handled_by_scp() {
     );
 
     let _init_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -252,7 +252,7 @@ async fn test_ping_handled_by_scp() {
     let ping_req = JsonRpcRequest::new(RequestId::Number(3), "ping".to_string(), None);
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&ping_req)
         .send()
@@ -293,7 +293,7 @@ async fn test_id_remapping() {
     );
 
     let _init_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -304,7 +304,7 @@ async fn test_id_remapping() {
     let req1 = JsonRpcRequest::new(RequestId::Number(100), "tools/list".to_string(), None);
 
     let response1 = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&req1)
         .send()
@@ -322,7 +322,7 @@ async fn test_id_remapping() {
     let req2 = JsonRpcRequest::new(RequestId::Number(200), "tools/list".to_string(), None);
 
     let response2 = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&req2)
         .send()

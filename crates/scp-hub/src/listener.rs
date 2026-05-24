@@ -5,17 +5,20 @@ use axum::{
     extract::State,
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
-    response::{sse::{Event, KeepAlive}, Response, Sse},
+    response::{
+        sse::{Event, KeepAlive},
+        Response, Sse,
+    },
     routing::{delete, get, post},
     Json, Router as AxumRouter,
 };
 use futures::stream::{self, StreamExt};
-use std::time::Duration;
 use scp_core::config::AuthConfig;
 use scp_core::protocol::{IncomingMessage, JsonRpcRequest};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info};
@@ -297,25 +300,37 @@ async fn handle_post_mcp(
         notif_headers.insert(
             header::CONTENT_TYPE,
             "application/json".parse().map_err(|_| {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid content type".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Invalid content type".to_string(),
+                )
             })?,
         );
         notif_headers.insert(
             "Mcp-Session-Id",
             session_id.parse().map_err(|_| {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid session ID".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Invalid session ID".to_string(),
+                )
             })?,
         );
         notif_headers.insert(
             "X-SCP-RateLimit-Remaining",
             rate_limit_remaining.to_string().parse().map_err(|_| {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid rate limit remaining header".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Invalid rate limit remaining header".to_string(),
+                )
             })?,
         );
         notif_headers.insert(
             "X-SCP-RateLimit-Reset",
             rate_limit_reset.to_string().parse().map_err(|_| {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid rate limit reset header".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Invalid rate limit reset header".to_string(),
+                )
             })?,
         );
         return Ok((StatusCode::ACCEPTED, notif_headers, String::new()));
@@ -326,7 +341,10 @@ async fn handle_post_mcp(
         IncomingMessage::Request(r) => r,
         // Response messages are not expected from clients — treat as error
         IncomingMessage::Response(_) => {
-            return Err((StatusCode::BAD_REQUEST, "Unexpected JSON-RPC Response from client".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Unexpected JSON-RPC Response from client".to_string(),
+            ));
         }
         IncomingMessage::Notification(_) => unreachable!(),
     };
@@ -504,8 +522,11 @@ async fn handle_get_mcp(
     // prepend the single initial keepalive.
     let stream = initial.chain(stream::select(events, keepalive));
 
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive")))
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keepalive"),
+    ))
 }
 
 /// DELETE /mcp — close session
@@ -642,16 +663,7 @@ mod tests {
         let store = Arc::new(SessionStore::new(1000));
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(tokio::sync::RwLock::new(ToolRegistry::new()));
-        let filter_config = scp_core::config::FilterConfig::default();
-        let router = Arc::new(Router::new(
-            pool_manager,
-            tool_registry,
-            store.clone(),
-            5,
-            4000,
-            300,
-            &filter_config,
-        ));
+        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000));
         let listener = ClientListener::new(addr, store, router, None);
         assert_eq!(listener.addr, addr);
     }

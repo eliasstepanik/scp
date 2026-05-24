@@ -34,7 +34,6 @@ fn create_test_config() -> FilterConfig {
         progressive_disclosure_enabled: true,
         short_circuit_below_tokens: 500,
         embedding: Default::default(),
-        intent_hint_enabled: true,
         progressive_hint_text: "[SCP: {shown} of {total} results shown]".to_string(),
     }
 }
@@ -70,12 +69,11 @@ fn generate_tool_array(count: usize) -> Value {
 fn bench_filter_pipeline_small(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     c.bench_function("filter_pipeline_small_10_tools", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.iter(|| {
             let pipeline = FilterPipeline::new(&create_test_config());
             let ctx = create_test_context("session_small");
             let content = black_box(generate_tool_array(10));
-
-            pipeline.run(&content, &ctx).await
+            rt.block_on(pipeline.run(&content, &ctx))
         });
     });
 }
@@ -84,12 +82,11 @@ fn bench_filter_pipeline_small(c: &mut Criterion) {
 fn bench_filter_pipeline_large(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     c.bench_function("filter_pipeline_large_100_tools", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.iter(|| {
             let pipeline = FilterPipeline::new(&create_test_config());
             let ctx = create_test_context("session_large");
             let content = black_box(generate_tool_array(100));
-
-            pipeline.run(&content, &ctx).await
+            rt.block_on(pipeline.run(&content, &ctx))
         });
     });
 }

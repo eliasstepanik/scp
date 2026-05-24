@@ -20,7 +20,7 @@ async fn test_multi_client_tools_list_and_call() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -108,7 +108,7 @@ async fn test_session_budget_isolation() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -163,7 +163,7 @@ async fn test_request_id_isolation() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -172,8 +172,8 @@ async fn test_request_id_isolation() {
     ));
 
     // Create two sessions
-    let (session1_id, _rx1) = session_store.create_with_defaults(None).await;
-    let (session2_id, _rx2) = session_store.create_with_defaults(None).await;
+    let (_session1_id, _rx1) = session_store.create_with_defaults(None).await;
+    let (_session2_id, _rx2) = session_store.create_with_defaults(None).await;
 
     // Both clients send requests with the same ID
     let req_id = RequestId::Number(42);
@@ -264,7 +264,7 @@ async fn test_concurrent_requests_same_session() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -273,7 +273,7 @@ async fn test_concurrent_requests_same_session() {
     ));
 
     // Create a session
-    let (session_id, _rx) = session_store.create_with_defaults(None).await;
+    let (_session_id, _rx) = session_store.create_with_defaults(None).await;
 
     // Send multiple concurrent requests from the same session
     let mut handles = vec![];
@@ -317,7 +317,7 @@ async fn test_session_isolation() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),

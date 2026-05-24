@@ -1,4 +1,4 @@
-use scp_core::protocol::{JsonRpcRequest, RequestId};
+﻿use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_tests::HttpTestHub;
 use serde_json::json;
 
@@ -18,7 +18,7 @@ async fn test_unknown_method_returns_error() {
     });
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&req)
         .send()
@@ -72,7 +72,7 @@ async fn test_tools_call_unknown_tool() {
     );
 
     let _init_response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&init_req)
         .send()
@@ -90,7 +90,7 @@ async fn test_tools_call_unknown_tool() {
     );
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&call_req)
         .send()
@@ -127,7 +127,7 @@ async fn test_notification_no_response() {
     });
 
     let response = client
-        .post(&hub.mcp_url())
+        .post(hub.mcp_url())
         .header("Authorization", &hub.auth_header())
         .json(&notif)
         .send()

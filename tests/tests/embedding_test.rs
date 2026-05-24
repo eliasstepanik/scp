@@ -188,7 +188,7 @@ async fn test_extension_tools_always_present() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -197,7 +197,7 @@ async fn test_extension_tools_always_present() {
     ));
 
     // Create a session
-    let (session_id, _rx) = session_store.create_with_defaults(None).await;
+    let (_session_id, _rx) = session_store.create_with_defaults(None).await;
 
     // Send a tools/list request
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
@@ -258,7 +258,7 @@ async fn test_scp_info_returns_version() {
     let pool_manager = Arc::new(PoolManager::new());
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
-    let filter_config = FilterConfig::default();
+    let _filter_config = FilterConfig::default();
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -266,7 +266,7 @@ async fn test_scp_info_returns_version() {
         300,
     ));
 
-    let (session_id, _rx) = session_store.create_with_defaults(None).await;
+    let (_session_id, _rx) = session_store.create_with_defaults(None).await;
 
     // Send tools/call with name = "scp_info"
     let call_req = JsonRpcRequest::new(

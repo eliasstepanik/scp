@@ -245,7 +245,7 @@ mod tests {
         for tool in &["server1.tool1", "server1.tool2", "server1.tool3"] {
             let score = index.score(tool, &query);
             assert!(
-                score >= 0.0 && score <= 1.0,
+                (0.0..=1.0).contains(&score),
                 "Score for {} should be in [0.0, 1.0], got {}",
                 tool,
                 score
