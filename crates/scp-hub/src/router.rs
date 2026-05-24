@@ -158,7 +158,7 @@ impl Router {
                         "params": {}
                     });
                     match tokio::time::timeout(
-                        std::time::Duration::from_secs(fanout_timeout),
+                        std::time::Duration::from_secs(fanout_timeout.min(5)),
                         transport.send_request(&req),
                     )
                     .await
@@ -176,7 +176,7 @@ impl Router {
                     match pool_manager_clone.get_pool(&sn).await {
                         Ok(pool) => {
                             match tokio::time::timeout(
-                                std::time::Duration::from_secs(fanout_timeout),
+                                std::time::Duration::from_secs(fanout_timeout.min(5)),
                                 pool.call("tools/list", None),
                             )
                             .await
@@ -201,48 +201,44 @@ impl Router {
         let mut all_tools: Vec<Value> = extension_tools;
         let mut registry_updates: Vec<(String, Vec<ToolEntry>)> = Vec::new();
 
-        for handle in handles {
-            if let Ok((server_name, result)) = handle.await {
-                match result {
-                    Ok(response_body) => {
-                        let tools_array = response_body
-                            .get("result")
-                            .and_then(|r| r.get("tools"))
-                            .or_else(|| response_body.get("tools"))
-                            .and_then(|t| t.as_array())
-                            .cloned()
-                            .unwrap_or_default();
+        let results = futures::future::join_all(handles).await;
+        for (server_name, result) in results.into_iter().flatten() {
+            match result {
+                Ok(response_body) => {
+                    let tools_array = response_body
+                        .get("result")
+                        .and_then(|r| r.get("tools"))
+                        .or_else(|| response_body.get("tools"))
+                        .and_then(|t| t.as_array())
+                        .cloned()
+                        .unwrap_or_default();
 
-                        // Build ToolEntry list for registry
-                        let entries: Vec<ToolEntry> = tools_array
-                            .iter()
-                            .filter_map(|tool| {
-                                let name = tool.get("name")?.as_str()?.to_string();
-                                Some(ToolEntry {
-                                    original_name: name.clone(),
-                                    qualified_name: format!("{}.{}", server_name, name),
-                                    server_name: server_name.clone(),
-                                    description: tool
-                                        .get("description")
-                                        .and_then(|d| d.as_str())
-                                        .map(|s| s.to_string()),
-                                    input_schema: tool
-                                        .get("inputSchema")
-                                        .cloned()
-                                        .unwrap_or(json!({})),
-                                    tags: vec![],
-                                    avg_response_tokens: 0.0,
-                                    call_count: 0,
-                                })
+                    // Build ToolEntry list for registry
+                    let entries: Vec<ToolEntry> = tools_array
+                        .iter()
+                        .filter_map(|tool| {
+                            let name = tool.get("name")?.as_str()?.to_string();
+                            Some(ToolEntry {
+                                original_name: name.clone(),
+                                qualified_name: format!("{}.{}", server_name, name),
+                                server_name: server_name.clone(),
+                                description: tool
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .map(|s| s.to_string()),
+                                input_schema: tool.get("inputSchema").cloned().unwrap_or(json!({})),
+                                tags: vec![],
+                                avg_response_tokens: 0.0,
+                                call_count: 0,
                             })
-                            .collect();
+                        })
+                        .collect();
 
-                        registry_updates.push((server_name, entries));
-                        all_tools.extend(tools_array);
-                    }
-                    Err(e) => {
-                        warn!("Backend {} tools/list error: {}", server_name, e)
-                    }
+                    registry_updates.push((server_name, entries));
+                    all_tools.extend(tools_array);
+                }
+                Err(e) => {
+                    warn!("Backend {} tools/list error: {}", server_name, e)
                 }
             }
         }

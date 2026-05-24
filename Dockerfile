@@ -22,7 +22,19 @@ COPY . .
 # Build the release binaries
 RUN cargo build --release -p scp-hub -p scp-cli
 
-# Stage 4: Runtime (minimal image)
+# Stage 4: Node.js deps builder stage
+FROM node:20-slim AS node-builder
+
+WORKDIR /app
+# Build ssh-server deps
+COPY mcp/ssh-server/package.json mcp/ssh-server/package-lock.json ./ssh-server/
+RUN cd ssh-server && npm ci --production --no-audit
+
+# Build n8n-server deps
+COPY mcp/n8n-server/package.json mcp/n8n-server/package-lock.json ./n8n-server/
+RUN cd n8n-server && npm ci --production --no-audit
+
+# Stage 5: Runtime (minimal image)
 # Ubuntu 24.04 ships glibc 2.39, matching the GitHub Actions ubuntu-24.04 build runner.
 FROM ubuntu:24.04
 
@@ -48,6 +60,12 @@ COPY --from=builder /app/target/release/scp-cli /usr/local/bin/scp-cli
 
 # Create config directory
 RUN mkdir -p /etc/scp && chown -R scp:scp /etc/scp /usr/local/bin/scp-hub /usr/local/bin/scp-cli
+
+# Copy Node.js MCP servers
+COPY --from=node-builder /app/ssh-server/node_modules /app/ssh-server/node_modules
+COPY mcp/ssh-server/dist /app/ssh-server/dist
+COPY --from=node-builder /app/n8n-server/node_modules /app/n8n-server/node_modules
+COPY mcp/n8n-server/dist /app/n8n-server/dist
 
 # Switch to non-root user
 USER scp

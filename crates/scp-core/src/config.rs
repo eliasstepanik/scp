@@ -561,6 +561,82 @@ format = "pretty"
     }
 
     #[test]
+    fn test_auth_toml_parse() {
+        let toml_str = r#"config_version = 1
+
+[hub]
+listen_address = "127.0.0.1"
+listen_port = 3200
+transports = ["http"]
+
+[hub.defaults]
+request_token_budget = 4000
+session_token_budget = 32000
+max_tools_exposed = 20
+fanout_timeout_secs = 5
+max_requests_per_min = 100
+burst_size = 20
+
+[hub.auth]
+method = "bearer"
+
+[hub.auth.profiles.default]
+token = "test-token"
+token_budget_per_request = 4000
+rate_limit_per_minute = 100
+
+[hub.auth.profiles.limited]
+token = "limited-token"
+token_budget_per_request = 2000
+rate_limit_per_minute = 2
+
+[admin]
+port = 3201
+
+[filter]
+enabled = true
+budget_strategy = "truncate"
+chunking_strategy = "paragraph"
+relevance_engine = "tags"
+
+[logging]
+level = "error"
+format = "pretty"
+
+[[servers]]
+name = "mock"
+transport = "stdio"
+command = "echo"
+args = []
+sharing = "shared"
+enabled = true
+priority = 100
+
+[servers.timeouts]
+connect_secs = 10
+request_secs = 30
+health_check_secs = 5
+
+[servers.retries]
+max_attempts = 3
+initial_delay_ms = 100
+max_delay_ms = 5000
+backoff_factor = 2.0
+"#;
+
+        let config: Config = toml::from_str(toml_str).expect("Failed to parse TOML");
+        let auth = config.hub.auth.expect("hub.auth should be Some");
+        assert_eq!(auth.method, "bearer");
+        assert!(auth.profiles.contains_key("default"));
+        assert_eq!(auth.profiles["default"].token, "test-token");
+        assert_eq!(
+            auth.resolve_profile("test-token"),
+            Some("default".to_string())
+        );
+        assert_eq!(auth.resolve_profile("wrong-token"), None);
+    }
+
+    #[test]
     fn test_validation_duplicate_servers() {
         let config_str = r#"
 config_version = 1
