@@ -180,8 +180,12 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| "127.0.0.1".parse().unwrap()),
         config.hub.listen_port,
     );
-    let client_listener =
-        ClientListener::new(client_addr, session_store.clone(), router.clone(), None);
+    let client_listener = ClientListener::new(
+        client_addr,
+        session_store.clone(),
+        router.clone(),
+        config.hub.auth.clone(),
+    );
     let client_shutdown_rx = shutdown_rx.resubscribe();
     let client_handle = tokio::spawn(async move {
         let shutdown = async {

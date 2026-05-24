@@ -192,6 +192,7 @@ mod tests {
                     max_requests_per_min: 100,
                     burst_size: 20,
                 },
+                auth: None,
             },
             servers,
             filter: Default::default(),

@@ -59,6 +59,8 @@ pub struct HubConfig {
     #[serde(default = "default_session_timeout_secs")]
     pub session_timeout_secs: u64,
     pub defaults: HubDefaults,
+    #[serde(default)]
+    pub auth: Option<AuthConfig>,
 }
 
 fn default_listen_address() -> String {
@@ -339,6 +341,8 @@ pub struct AuthConfig {
 /// Authentication profile
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthProfile {
+    /// Bearer token for this profile
+    pub token: String,
     /// Token budget per request
     pub token_budget_per_request: usize,
     /// Rate limit per minute
@@ -346,9 +350,15 @@ pub struct AuthProfile {
 }
 
 impl AuthConfig {
-    /// Resolve a profile from a token (stub implementation)
-    pub fn resolve_profile(&self, _token: &str) -> Option<String> {
-        None
+    /// Resolve a profile name from a bearer token.
+    ///
+    /// Iterates all profiles and returns the name of the first profile whose
+    /// `token` field matches the supplied token.
+    pub fn resolve_profile(&self, token: &str) -> Option<String> {
+        self.profiles
+            .iter()
+            .find(|(_, profile)| profile.token == token)
+            .map(|(name, _)| name.clone())
     }
 }
 
