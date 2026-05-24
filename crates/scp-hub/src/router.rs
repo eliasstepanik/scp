@@ -198,8 +198,8 @@ impl Router {
             }
         }
 
-        let mut all_tools: Vec<Value> = extension_tools;
-        let mut registry_updates: Vec<(String, Vec<ToolEntry>)> = Vec::new();
+        // Collect (server_name, raw_tools_array, entries) before updating registry
+        let mut backend_tools: Vec<(String, Vec<Value>, Vec<ToolEntry>)> = Vec::new();
 
         let results = futures::future::join_all(handles).await;
         for (server_name, result) in results.into_iter().flatten() {
@@ -234,8 +234,7 @@ impl Router {
                         })
                         .collect();
 
-                    registry_updates.push((server_name, entries));
-                    all_tools.extend(tools_array);
+                    backend_tools.push((server_name, tools_array, entries));
                 }
                 Err(e) => {
                     warn!("Backend {} tools/list error: {}", server_name, e)
@@ -246,8 +245,39 @@ impl Router {
         // Update the tool registry with discovered tools
         {
             let mut registry = self.tool_registry.write().await;
-            for (server_name, entries) in registry_updates {
-                registry.rebuild_for_server(&server_name, entries);
+            for (server_name, _, entries) in &backend_tools {
+                registry.rebuild_for_server(server_name, entries.clone());
+            }
+        }
+
+        // Build the tools list using registry-aware names:
+        // - If a tool has no collision, the alias exists → use original (unqualified) name
+        // - If a tool has a collision, no alias exists → use qualified name so callers can route it
+        let mut all_tools: Vec<Value> = extension_tools;
+        {
+            let registry = self.tool_registry.read().await;
+            for (server_name, tools_array, _) in &backend_tools {
+                for tool in tools_array {
+                    let Some(original_name) = tool.get("name").and_then(|n| n.as_str()) else {
+                        continue;
+                    };
+                    let qualified_name = format!("{}.{}", server_name, original_name);
+
+                    // Determine which name to expose: prefer the unqualified alias when it
+                    // resolves unambiguously to this server's tool; fall back to qualified.
+                    let exposed_name = match registry.lookup(original_name) {
+                        Some(entry) if entry.server_name == *server_name => {
+                            original_name.to_string()
+                        }
+                        _ => qualified_name,
+                    };
+
+                    let mut tool_obj = tool.clone();
+                    if let Some(obj) = tool_obj.as_object_mut() {
+                        obj.insert("name".to_string(), json!(exposed_name));
+                    }
+                    all_tools.push(tool_obj);
+                }
             }
         }
 
