@@ -50,7 +50,7 @@ pub fn init_tracing_from_config(config: &LoggingConfig) {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&config.level));
 
-    if config.json_format {
+    if config.format == "json" {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(

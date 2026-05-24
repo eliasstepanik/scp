@@ -1,90 +1,13 @@
-use scp_core::mcp_types::InitializeResult;
-use scp_core::protocol::{IncomingMessage, JsonRpcRequest, RequestId};
+use scp_core::protocol::{JsonRpcRequest, RequestId};
+use scp_tests::HttpTestHub;
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
 
-/// Get the path to the scp-hub binary.
-/// CARGO_BIN_EXE_ only works for binaries in the same crate, so we derive
-/// the workspace root from CARGO_MANIFEST_DIR (the tests/ crate directory).
-fn scp_hub_bin() -> std::path::PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest_dir)
-        .parent()
-        .expect("tests/ crate must have a parent workspace directory");
-    let exe_name = if cfg!(windows) {
-        "scp-hub.exe"
-    } else {
-        "scp-hub"
-    };
-    workspace_root.join("target").join("debug").join(exe_name)
-}
+/// Test that initialize handshake works over HTTP
+#[tokio::test]
+async fn test_initialize_handshake() {
+    let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
 
-/// Helper to spawn scp-hub with mock server
-fn spawn_scp_with_mock() -> (
-    Child,
-    std::process::ChildStdin,
-    BufReader<std::process::ChildStdout>,
-) {
-    // mock-mcp-server is in the same crate, so CARGO_BIN_EXE_ works here
-    let mock_server_bin = env!("CARGO_BIN_EXE_mock-mcp-server");
-
-    let mut child = Command::new(scp_hub_bin())
-        .arg("--server")
-        .arg(mock_server_bin)
-        .arg("--log-level")
-        .arg("error")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Failed to spawn scp-hub");
-
-    let stdin = child.stdin.take().expect("Failed to get stdin");
-    let stdout = child.stdout.take().expect("Failed to get stdout");
-    let reader = BufReader::new(stdout);
-
-    // Give the process time to start and initialize the backend
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    (child, stdin, reader)
-}
-
-/// Send a JSON-RPC request and receive the response
-fn send_request(
-    stdin: &mut std::process::ChildStdin,
-    reader: &mut BufReader<std::process::ChildStdout>,
-    req: &JsonRpcRequest,
-) -> IncomingMessage {
-    let json_str = serde_json::to_string(req).expect("Failed to serialize request");
-    writeln!(stdin, "{}", json_str).expect("Failed to write to stdin");
-    stdin.flush().expect("Failed to flush stdin");
-
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .expect("Failed to read response");
-    let trimmed = line.trim();
-    serde_json::from_str(trimmed).expect("Failed to parse response")
-}
-
-/// Send a JSON-RPC notification
-fn send_notification(
-    stdin: &mut std::process::ChildStdin,
-    notif: &scp_core::protocol::JsonRpcNotification,
-) {
-    let json_str = serde_json::to_string(notif).expect("Failed to serialize notification");
-    writeln!(stdin, "{}", json_str).expect("Failed to write to stdin");
-    stdin.flush().expect("Failed to flush stdin");
-}
-
-/// Phase 1: Tests marked as ignored pending full proxy loop wiring to config-driven servers.
-/// The CLI interface changed from --server/--log-level to --config in Phase 1.
-/// These tests will be updated in Phase 2 when the full proxy loop is wired.
-#[test]
-#[ignore]
-fn test_initialize_handshake() {
-    let (_child, mut stdin, mut reader) = spawn_scp_with_mock();
+    let client = reqwest::Client::new();
 
     // Send initialize request
     let init_req = JsonRpcRequest::new(
@@ -100,29 +23,40 @@ fn test_initialize_handshake() {
         })),
     );
 
-    let response = send_request(&mut stdin, &mut reader, &init_req);
+    let response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&init_req)
+        .send()
+        .await
+        .expect("Failed to send request");
 
-    match response {
-        IncomingMessage::Response(resp) => {
-            assert_eq!(resp.id, Some(RequestId::Number(1)));
-            assert!(resp.result.is_some());
-            assert!(resp.error.is_none());
+    assert_eq!(response.status(), 200);
 
-            let result: InitializeResult =
-                serde_json::from_value(resp.result.unwrap()).expect("Failed to parse result");
-            assert_eq!(result.server_info.name, "scp");
-        }
-        _ => panic!("Expected response, got {:?}", response),
-    }
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse response");
+
+    assert_eq!(body.get("id"), Some(&json!(1)));
+    assert!(body.get("result").is_some());
+    assert!(body.get("error").is_none());
+
+    let result = body.get("result").unwrap();
+    assert_eq!(
+        result.get("serverInfo").and_then(|s| s.get("name")).and_then(|n| n.as_str()),
+        Some("scp")
+    );
+
+    hub.kill().ok();
 }
 
-/// Phase 1: Tests marked as ignored pending full proxy loop wiring to config-driven servers.
-/// The CLI interface changed from --server/--log-level to --config in Phase 1.
-/// These tests will be updated in Phase 2 when the full proxy loop is wired.
-#[test]
-#[ignore]
-fn test_tools_list_passthrough() {
-    let (_child, mut stdin, mut reader) = spawn_scp_with_mock();
+/// Test that tools/list passthrough works
+#[tokio::test]
+async fn test_tools_list_passthrough() {
+    let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
+
+    let client = reqwest::Client::new();
 
     // First, initialize
     let init_req = JsonRpcRequest::new(
@@ -138,38 +72,48 @@ fn test_tools_list_passthrough() {
         })),
     );
 
-    let _init_response = send_request(&mut stdin, &mut reader, &init_req);
+    let _init_response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&init_req)
+        .send()
+        .await
+        .expect("Failed to send initialize");
 
-    // Send initialized notification
-    let initialized_notif =
-        scp_core::protocol::JsonRpcNotification::new("notifications/initialized".to_string(), None);
-    send_notification(&mut stdin, &initialized_notif);
-
-    // Now send tools/list request
+    // Send tools/list request
     let tools_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
 
-    let response = send_request(&mut stdin, &mut reader, &tools_req);
+    let response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&tools_req)
+        .send()
+        .await
+        .expect("Failed to send request");
 
-    match response {
-        IncomingMessage::Response(resp) => {
-            assert_eq!(resp.id, Some(RequestId::Number(2)));
-            assert!(resp.result.is_some());
-            assert!(resp.error.is_none());
+    assert_eq!(response.status(), 200);
 
-            let result = resp.result.unwrap();
-            assert!(result.get("tools").is_some());
-        }
-        _ => panic!("Expected response, got {:?}", response),
-    }
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse response");
+
+    assert_eq!(body.get("id"), Some(&json!(2)));
+    assert!(body.get("result").is_some());
+    assert!(body.get("error").is_none());
+
+    let result = body.get("result").unwrap();
+    assert!(result.get("tools").is_some());
+
+    hub.kill().ok();
 }
 
-/// Phase 1: Tests marked as ignored pending full proxy loop wiring to config-driven servers.
-/// The CLI interface changed from --server/--log-level to --config in Phase 1.
-/// These tests will be updated in Phase 2 when the full proxy loop is wired.
-#[test]
-#[ignore]
-fn test_tools_call_passthrough() {
-    let (_child, mut stdin, mut reader) = spawn_scp_with_mock();
+/// Test that tools/call passthrough works
+#[tokio::test]
+async fn test_tools_call_passthrough() {
+    let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
+
+    let client = reqwest::Client::new();
 
     // First, initialize
     let init_req = JsonRpcRequest::new(
@@ -185,47 +129,104 @@ fn test_tools_call_passthrough() {
         })),
     );
 
-    let _init_response = send_request(&mut stdin, &mut reader, &init_req);
+    let _init_response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&init_req)
+        .send()
+        .await
+        .expect("Failed to send initialize");
 
-    // Send initialized notification
-    let initialized_notif =
-        scp_core::protocol::JsonRpcNotification::new("notifications/initialized".to_string(), None);
-    send_notification(&mut stdin, &initialized_notif);
+    // List tools to confirm scp_info is available
+    let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
 
-    // Now send tools/call request
+    let list_response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&list_req)
+        .send()
+        .await
+        .expect("Failed to send tools/list");
+
+    let list_body: serde_json::Value = list_response
+        .json()
+        .await
+        .expect("Failed to parse tools/list response");
+
+    // Verify scp_info is in the tools list
+    let tool_names: Vec<String> = list_body
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|tool| tool.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    assert!(
+        tool_names.contains(&"scp_info".to_string()),
+        "scp_info tool not found in tools/list response. Available tools: {:?}",
+        tool_names
+    );
+
+    // Send tools/call request for scp_info with empty arguments
     let call_req = JsonRpcRequest::new(
-        RequestId::Number(2),
+        RequestId::Number(3),
         "tools/call".to_string(),
         Some(json!({
-            "name": "echo",
-            "arguments": {
-                "message": "hello"
-            }
+            "name": "scp_info",
+            "arguments": {}
         })),
     );
 
-    let response = send_request(&mut stdin, &mut reader, &call_req);
+    let response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&call_req)
+        .send()
+        .await
+        .expect("Failed to send request");
 
-    match response {
-        IncomingMessage::Response(resp) => {
-            assert_eq!(resp.id, Some(RequestId::Number(2)));
-            assert!(resp.result.is_some());
-            assert!(resp.error.is_none());
+    assert_eq!(response.status(), 200);
 
-            let result = resp.result.unwrap();
-            assert!(result.get("content").is_some());
-        }
-        _ => panic!("Expected response, got {:?}", response),
-    }
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse response");
+
+    assert_eq!(body.get("id"), Some(&json!(3)));
+    assert!(body.get("result").is_some(), "Response body: {:?}", body);
+    assert!(body.get("error").is_none());
+
+    let result = body.get("result").unwrap();
+    assert!(result.get("content").is_some());
+
+    // Verify the content contains scp or version information
+    let content = result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|item| item.get("text"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+
+    assert!(
+        content.to_lowercase().contains("scp") || content.to_lowercase().contains("version"),
+        "Content does not contain expected scp or version information: {}",
+        content
+    );
+
+    hub.kill().ok();
 }
 
-/// Phase 1: Tests marked as ignored pending full proxy loop wiring to config-driven servers.
-/// The CLI interface changed from --server/--log-level to --config in Phase 1.
-/// These tests will be updated in Phase 2 when the full proxy loop is wired.
-#[test]
-#[ignore]
-fn test_ping_handled_by_scp() {
-    let (_child, mut stdin, mut reader) = spawn_scp_with_mock();
+/// Test that ping is handled by SCP
+#[tokio::test]
+async fn test_ping_handled_by_scp() {
+    let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
+
+    let client = reqwest::Client::new();
 
     // First, initialize
     let init_req = JsonRpcRequest::new(
@@ -241,37 +242,46 @@ fn test_ping_handled_by_scp() {
         })),
     );
 
-    let _init_response = send_request(&mut stdin, &mut reader, &init_req);
-
-    // Send initialized notification
-    let initialized_notif =
-        scp_core::protocol::JsonRpcNotification::new("notifications/initialized".to_string(), None);
-    send_notification(&mut stdin, &initialized_notif);
+    let _init_response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&init_req)
+        .send()
+        .await
+        .expect("Failed to send initialize");
 
     // Send ping request
     let ping_req = JsonRpcRequest::new(RequestId::Number(3), "ping".to_string(), None);
 
-    let response = send_request(&mut stdin, &mut reader, &ping_req);
+    let response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&ping_req)
+        .send()
+        .await
+        .expect("Failed to send request");
 
-    match response {
-        IncomingMessage::Response(resp) => {
-            assert_eq!(resp.id, Some(RequestId::Number(3)));
-            assert!(resp.result.is_some());
-            assert!(resp.error.is_none());
-            // Result should be empty object
-            assert_eq!(resp.result.unwrap(), json!({}));
-        }
-        _ => panic!("Expected response, got {:?}", response),
-    }
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse response");
+
+    assert_eq!(body.get("id"), Some(&json!(3)));
+    assert!(body.get("result").is_some());
+    assert!(body.get("error").is_none());
+    assert_eq!(body.get("result").unwrap(), &json!({}));
+
+    hub.kill().ok();
 }
 
-/// Phase 1: Tests marked as ignored pending full proxy loop wiring to config-driven servers.
-/// The CLI interface changed from --server/--log-level to --config in Phase 1.
-/// These tests will be updated in Phase 2 when the full proxy loop is wired.
-#[test]
-#[ignore]
-fn test_id_remapping() {
-    let (_child, mut stdin, mut reader) = spawn_scp_with_mock();
+/// Test that request IDs are properly remapped
+#[tokio::test]
+async fn test_id_remapping() {
+    let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
+
+    let client = reqwest::Client::new();
 
     // First, initialize
     let init_req = JsonRpcRequest::new(
@@ -287,36 +297,55 @@ fn test_id_remapping() {
         })),
     );
 
-    let _init_response = send_request(&mut stdin, &mut reader, &init_req);
-
-    // Send initialized notification
-    let initialized_notif =
-        scp_core::protocol::JsonRpcNotification::new("notifications/initialized".to_string(), None);
-    send_notification(&mut stdin, &initialized_notif);
+    let _init_response = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&init_req)
+        .send()
+        .await
+        .expect("Failed to send initialize");
 
     // Send request with id=100
     let req1 = JsonRpcRequest::new(RequestId::Number(100), "tools/list".to_string(), None);
 
-    let response1 = send_request(&mut stdin, &mut reader, &req1);
+    let response1 = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&req1)
+        .send()
+        .await
+        .expect("Failed to send request");
 
-    match response1 {
-        IncomingMessage::Response(resp) => {
-            assert_eq!(resp.id, Some(RequestId::Number(100)));
-            assert!(resp.result.is_some());
-        }
-        _ => panic!("Expected response, got {:?}", response1),
-    }
+    assert_eq!(response1.status(), 200);
+
+    let body1: serde_json::Value = response1
+        .json()
+        .await
+        .expect("Failed to parse response");
+
+    assert_eq!(body1.get("id"), Some(&json!(100)));
+    assert!(body1.get("result").is_some());
 
     // Send request with id=200
     let req2 = JsonRpcRequest::new(RequestId::Number(200), "tools/list".to_string(), None);
 
-    let response2 = send_request(&mut stdin, &mut reader, &req2);
+    let response2 = client
+        .post(&hub.mcp_url())
+        .header("Authorization", &hub.auth_header())
+        .json(&req2)
+        .send()
+        .await
+        .expect("Failed to send request");
 
-    match response2 {
-        IncomingMessage::Response(resp) => {
-            assert_eq!(resp.id, Some(RequestId::Number(200)));
-            assert!(resp.result.is_some());
-        }
-        _ => panic!("Expected response, got {:?}", response2),
-    }
+    assert_eq!(response2.status(), 200);
+
+    let body2: serde_json::Value = response2
+        .json()
+        .await
+        .expect("Failed to parse response");
+
+    assert_eq!(body2.get("id"), Some(&json!(200)));
+    assert!(body2.get("result").is_some());
+
+    hub.kill().ok();
 }

@@ -25,11 +25,8 @@ async fn test_full_hub_lifecycle() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300, // session_timeout_secs
+        300, // fanout_timeout_secs
         4000, // request_token_budget
-        300, // tool_cache_ttl_secs
-        &filter_config,
     ));
 
     // Create a session
@@ -55,7 +52,7 @@ async fn test_full_hub_lifecycle() {
         })),
     );
 
-    let init_resp = router.route(&session_id, init_req).await;
+    let init_resp = router.route(init_req).await;
     assert!(
         init_resp.result.is_some(),
         "Initialize should return a result"
@@ -63,7 +60,7 @@ async fn test_full_hub_lifecycle() {
 
     // Test tools/list request
     let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
-    let list_resp = router.route(&session_id, list_req).await;
+    let list_resp = router.route(list_req).await;
 
     assert!(
         list_resp.result.is_some(),
@@ -128,11 +125,8 @@ async fn test_tool_call_proxied_through_filter() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
         300,
-        &filter_config,
     ));
 
     // Create a session with a known budget
@@ -158,7 +152,7 @@ async fn test_tool_call_proxied_through_filter() {
         })),
     );
 
-    let call_resp = router.route(&session_id, call_req).await;
+    let call_resp = router.route(call_req).await;
 
     // Verify we got a response (either result or error)
     assert!(

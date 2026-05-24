@@ -19,6 +19,9 @@ clap = { workspace = true }
 uuid = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
+prometheus = { workspace = true }
+once_cell = { workspace = true }
+futures = { workspace = true }
 scp-core = { path = "../scp-core" }
 scp-transport = { path = "../scp-transport" }
 scp-pool = { path = "../scp-pool" }

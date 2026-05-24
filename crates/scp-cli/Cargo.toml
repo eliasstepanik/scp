@@ -13,3 +13,4 @@ clap = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1.0"
+urlencoding = { workspace = true }

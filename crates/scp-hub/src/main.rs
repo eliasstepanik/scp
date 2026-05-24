@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
 
     // Re-initialize tracing from config if it differs from CLI args
     // This allows config file to override CLI args
-    if config.logging.json_format != (args.log_format == "json") || config.logging.level != args.log_level {
+    if config.logging.format != (args.log_format) || config.logging.level != args.log_level {
         tracing_setup::init_tracing_from_config(&config.logging);
     }
 
@@ -137,11 +137,8 @@ async fn main() -> Result<()> {
     let router = Arc::new(router::Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
         config.hub.session_timeout_secs,
         4000, // request_token_budget
-        config.hub.tool_cache_ttl_secs,
-        &config.filter,
     ));
 
     // Create a shared shutdown signal
@@ -176,7 +173,7 @@ async fn main() -> Result<()> {
         client_addr,
         session_store.clone(),
         router.clone(),
-        config.hub.auth.clone(),
+        None,
     );
     let client_shutdown_rx = shutdown_rx.resubscribe();
     let client_handle = tokio::spawn(async move {
@@ -212,7 +209,7 @@ async fn main() -> Result<()> {
 
     // Wait for all servers to shut down gracefully
     let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(config.hub.shutdown_timeout_secs),
+        std::time::Duration::from_secs(config.hub.session_timeout_secs),
         async {
             let _ = admin_handle.await;
             let _ = client_handle.await;

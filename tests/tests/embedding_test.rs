@@ -29,18 +29,14 @@ async fn test_progressive_disclosure_end_to_end() {
         progressive_disclosure_enabled: true,
         short_circuit_below_tokens: 10, // Force filtering to always run
         embedding: Default::default(),
-        intent_hint_enabled: true,
         progressive_hint_text: "[SCP: {shown} of {total} results shown. Call scp_get_more(request_id=\"{id}\") for more.]".to_string(),
     };
 
     let _router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
         300,
-        &filter_config,
     ));
 
     // Create a session
@@ -144,10 +140,8 @@ async fn test_fallback_to_keyword_scoring() {
         embedding: scp_core::config::EmbeddingConfig {
             endpoint: "http://127.0.0.1:19999/api/embed".to_string(),
             model: "test-model".to_string(),
-            cache_embeddings: false,
-            cache_path: "./test_cache".to_string(),
+            dimension: 1536,
         },
-        intent_hint_enabled: true,
         progressive_hint_text: "[SCP: {shown} of {total} results shown.]".to_string(),
     };
 
@@ -197,11 +191,8 @@ async fn test_extension_tools_always_present() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
         300,
-        &filter_config,
     ));
 
     // Create a session
@@ -209,7 +200,7 @@ async fn test_extension_tools_always_present() {
 
     // Send a tools/list request
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
-    let resp = router.route(&session_id, list_req).await;
+    let resp = router.route(list_req).await;
 
     // Parse the response
     assert!(resp.result.is_some(), "tools/list should return a result");
@@ -266,11 +257,8 @@ async fn test_scp_info_returns_version() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
         300,
-        &filter_config,
     ));
 
     let (session_id, _rx) = session_store.create_with_defaults(None).await;
@@ -285,7 +273,7 @@ async fn test_scp_info_returns_version() {
         })),
     );
 
-    let resp = router.route(&session_id, call_req).await;
+    let resp = router.route(call_req).await;
 
     // Parse the response
     assert!(

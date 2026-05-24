@@ -146,7 +146,7 @@ async fn auth_middleware(
 
                 // Resolve profile by token
                 match auth_config.resolve_profile(token) {
-                    Some((profile_name, _profile)) => profile_name,
+                    Some(profile_name) => profile_name,
                     None => {
                         return Err((
                             StatusCode::UNAUTHORIZED,
@@ -289,7 +289,7 @@ async fn handle_post_mcp(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON-RPC: {}", e)))?;
 
     // Route message to backend via Router
-    let response = state.router.route(&session_id, request).await;
+    let response = state.router.route(request).await;
 
     // Push response to session's outbound channel
     if let Some(session) = state.session_store.get(&session_id).await {
@@ -518,7 +518,7 @@ pub async fn run_stdio_client(
                         debug!("Received request from stdio: {}", request.method);
 
                         // Route message via Router
-                        let response = router.route(&session_id, request).await;
+                        let response = router.route(request).await;
 
                         // Write response to stdout
                         if let Ok(json_str) = serde_json::to_string(&response) {

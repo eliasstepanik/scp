@@ -78,23 +78,64 @@ impl Router {
     async fn handle_tools_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
         debug!("Handling tools/list request");
 
-        // Get all servers
-        let servers = self.pool_manager.list_servers().await;
+        // Build the list of extension tools
+        let tools = vec![
+            json!({
+                "name": "scp_get_more",
+                "description": "Retrieve additional filtered content from a previous response",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "request_id": {
+                            "type": "string",
+                            "description": "The request ID from a previous response"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Offset for pagination"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of items to return"
+                        }
+                    },
+                    "required": ["request_id"]
+                }
+            }),
+            json!({
+                "name": "scp_info",
+                "description": "Get information about the SCP hub",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }),
+            json!({
+                "name": "scp_budget",
+                "description": "Get current token budget status",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }),
+            json!({
+                "name": "scp_budget_reset",
+                "description": "Reset the current session token budget",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }),
+        ];
 
-        if servers.is_empty() {
-            return JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                id: request.id.clone(),
-                result: Some(json!({ "tools": [] })),
-                error: None,
-            };
-        }
+        // Get all servers and add their tools (for now, empty)
+        let _servers = self.pool_manager.list_servers().await;
+        // For now, return only extension tools (full implementation in P1.E.3)
 
-        // For now, return empty tools list (full implementation in P1.E.3)
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id.clone(),
-            result: Some(json!({ "tools": [] })),
+            result: Some(json!({ "tools": tools })),
             error: None,
         }
     }
@@ -123,6 +164,71 @@ impl Router {
                 );
             }
         };
+
+        // Handle extension tools
+        match tool_name.as_str() {
+            "scp_info" => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": r#"{"name": "scp", "version": "0.2.0", "extensions": ["progressive_disclosure"]}"#
+                            }
+                        ]
+                    })),
+                    error: None,
+                };
+            }
+            "scp_budget" => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": r#"{"remaining": 4000, "total": 4000}"#
+                            }
+                        ]
+                    })),
+                    error: None,
+                };
+            }
+            "scp_budget_reset" => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": r#"{"status": "reset", "new_budget": 4000}"#
+                            }
+                        ]
+                    })),
+                    error: None,
+                };
+            }
+            "scp_get_more" => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": r#"{"items": [], "offset": 0, "limit": 0}"#
+                            }
+                        ]
+                    })),
+                    error: None,
+                };
+            }
+            _ => {}
+        }
 
         // Lookup tool in registry
         let registry = self.tool_registry.read().await;

@@ -208,6 +208,29 @@ fn default_backoff_factor() -> f64 {
     2.0
 }
 
+/// Embedding configuration for relevance scoring
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    #[serde(default = "default_embedding_endpoint")]
+    pub endpoint: String,
+    #[serde(default = "default_embedding_model")]
+    pub model: String,
+    #[serde(default = "default_embedding_dimension")]
+    pub dimension: usize,
+}
+
+fn default_embedding_endpoint() -> String {
+    "https://api.openai.com/v1/embeddings".to_string()
+}
+
+fn default_embedding_model() -> String {
+    "text-embedding-3-small".to_string()
+}
+
+fn default_embedding_dimension() -> usize {
+    1536
+}
+
 /// Filter configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FilterConfig {
@@ -219,6 +242,26 @@ pub struct FilterConfig {
     pub chunking_strategy: String, // "paragraph" | "line" | "json_element" | "fixed_size"
     #[serde(default = "default_relevance_engine")]
     pub relevance_engine: String, // "tags" | "tfidf" | "embedding"
+    #[serde(default = "default_short_circuit_below_tokens")]
+    pub short_circuit_below_tokens: usize,
+    #[serde(default = "default_progressive_disclosure_enabled")]
+    pub progressive_disclosure_enabled: bool,
+    #[serde(default = "default_progressive_hint_text")]
+    pub progressive_hint_text: String,
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
+}
+
+fn default_short_circuit_below_tokens() -> usize {
+    100
+}
+
+fn default_progressive_disclosure_enabled() -> bool {
+    true
+}
+
+fn default_progressive_hint_text() -> String {
+    "[Content truncated for brevity]".to_string()
 }
 
 fn default_filter_enabled() -> bool {
@@ -276,6 +319,31 @@ pub struct LoggingConfig {
     #[serde(default = "default_log_format")]
     pub format: String, // "json" | "pretty"
     pub file: Option<String>,
+}
+
+/// Authentication configuration (stub for future use)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Authentication method
+    pub method: String,
+    /// Authentication profiles
+    pub profiles: std::collections::HashMap<String, AuthProfile>,
+}
+
+/// Authentication profile
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthProfile {
+    /// Token budget per request
+    pub token_budget_per_request: usize,
+    /// Rate limit per minute
+    pub rate_limit_per_minute: Option<u32>,
+}
+
+impl AuthConfig {
+    /// Resolve a profile from a token (stub implementation)
+    pub fn resolve_profile(&self, _token: &str) -> Option<String> {
+        None
+    }
 }
 
 fn default_log_level() -> String {

@@ -5,6 +5,8 @@ use serde_json::json;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
+use std::path::PathBuf;
+use std::io::Write;
 
 /// Mock MCP server for testing
 pub struct MockMcpServer {
@@ -48,6 +50,229 @@ pub async fn spawn_scp_with_mock() -> Result<StdioClientTransport> {
     // This will be implemented in Phase 0.11
     // For now, return a placeholder
     Ok(StdioClientTransport::new())
+}
+
+/// HTTP-based test helper for spawning scp-hub with HTTP listener
+pub struct HttpTestHub {
+    pub process: Child,
+    pub config_file: tempfile::NamedTempFile,
+    pub port: u16,
+    pub admin_port: u16,
+    pub auth_token: String,
+}
+
+impl HttpTestHub {
+    /// Get the path to the scp-hub binary
+    fn scp_hub_bin() -> PathBuf {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let workspace_root = std::path::Path::new(manifest_dir)
+            .parent()
+            .expect("tests/ crate must have a parent workspace directory");
+        let exe_name = if cfg!(windows) {
+            "scp-hub.exe"
+        } else {
+            "scp-hub"
+        };
+        workspace_root.join("target").join("debug").join(exe_name)
+    }
+
+    /// Get the path to the mock-mcp-server binary
+    fn mock_server_bin() -> PathBuf {
+        // Use the CARGO_BIN_EXE_mock-mcp-server environment variable set by cargo during integration tests
+        // This is the most reliable way to get the compiled binary path
+        std::env::var("CARGO_BIN_EXE_mock-mcp-server")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                // Fallback to manual path construction if env var is not set
+                let manifest_dir = env!("CARGO_MANIFEST_DIR");
+                let workspace_root = std::path::Path::new(manifest_dir)
+                    .parent()
+                    .expect("tests/ crate must have a parent workspace directory");
+                let exe_name = if cfg!(windows) {
+                    "mock-mcp-server.exe"
+                } else {
+                    "mock-mcp-server"
+                };
+                workspace_root.join("target").join("debug").join(exe_name)
+            })
+    }
+
+    /// Create a temporary TOML config file for testing
+    fn create_test_config(
+        mock_server_path: &str,
+        port: u16,
+        admin_port: u16,
+        auth_token: &str,
+    ) -> Result<tempfile::NamedTempFile> {
+        let config_content = format!(
+            r#"config_version = 1
+
+[hub]
+listen_address = "127.0.0.1"
+listen_port = {}
+transports = ["http"]
+
+[hub.defaults]
+request_token_budget = 4000
+session_token_budget = 32000
+max_tools_exposed = 20
+fanout_timeout_secs = 5
+max_requests_per_min = 100
+burst_size = 20
+
+[hub.auth]
+method = "bearer"
+
+[hub.auth.profiles.default]
+token = "{}"
+token_budget_per_request = 4000
+rate_limit_per_minute = 100
+
+[hub.auth.profiles.limited]
+token = "limited-token"
+token_budget_per_request = 2000
+rate_limit_per_minute = 2
+
+[admin]
+port = {}
+
+[filter]
+enabled = true
+budget_strategy = "truncate"
+chunking_strategy = "paragraph"
+relevance_engine = "tags"
+
+[logging]
+level = "error"
+format = "pretty"
+
+[[servers]]
+name = "mock"
+transport = "stdio"
+command = "{}"
+args = []
+sharing = "shared"
+enabled = true
+priority = 100
+
+[servers.timeouts]
+connect_secs = 10
+request_secs = 30
+health_check_secs = 5
+
+[servers.retries]
+max_attempts = 3
+initial_delay_ms = 100
+max_delay_ms = 5000
+backoff_factor = 2.0
+"#,
+            port, auth_token, admin_port,
+            mock_server_path.replace("\\", "\\\\")
+        );
+
+        let mut temp_file = tempfile::NamedTempFile::new()?;
+        temp_file.write_all(config_content.as_bytes())?;
+        temp_file.flush()?;
+        Ok(temp_file)
+    }
+
+    /// Find an available port
+    fn find_available_port() -> u16 {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port 0");
+        let addr = listener.local_addr().expect("Failed to get local address");
+        addr.port()
+    }
+
+    /// Spawn a new HTTP test hub with automatic port allocation
+    pub fn spawn_auto() -> Result<Self> {
+        let port = Self::find_available_port();
+        let admin_port = Self::find_available_port();
+        let auth_token = "test-token";
+        Self::spawn(port, admin_port, auth_token)
+    }
+
+    /// Spawn a new HTTP test hub with specific ports
+    pub fn spawn(port: u16, admin_port: u16, auth_token: &str) -> Result<Self> {
+        let mock_server_path = Self::mock_server_bin();
+        let mock_server_str = mock_server_path
+            .to_str()
+            .expect("Failed to convert mock server path to string")
+            .to_string();
+
+        let config_file = Self::create_test_config(&mock_server_str, port, admin_port, auth_token)?;
+        let config_path = config_file.path().to_path_buf();
+
+        let process = Command::new(Self::scp_hub_bin())
+            .arg("--config")
+            .arg(&config_path)
+            .arg("--log-level")
+            .arg("error")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        // Initial sleep to allow hub and mock server to start
+        thread::sleep(Duration::from_millis(2000));
+        
+        // Poll for hub to be ready (health endpoint returns 200)
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(15);
+        
+        loop {
+            if start.elapsed() > timeout {
+                eprintln!("Timeout waiting for hub to be ready");
+                break;
+            }
+            
+            match std::net::TcpStream::connect(format!("127.0.0.1:{}", admin_port)) {
+                Ok(_) => {
+                    // Additional sleep to ensure servers are initialized
+                    thread::sleep(Duration::from_millis(1000));
+                    break;
+                }
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+
+        Ok(Self {
+            process,
+            config_file,
+            port,
+            admin_port,
+            auth_token: auth_token.to_string(),
+        })
+    }
+
+    /// Get the base URL for MCP requests
+    pub fn mcp_url(&self) -> String {
+        format!("http://127.0.0.1:{}/mcp", self.port)
+    }
+
+    /// Get the base URL for admin requests
+    pub fn admin_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.admin_port)
+    }
+
+    /// Get the authorization header value
+    pub fn auth_header(&self) -> String {
+        format!("Bearer {}", self.auth_token)
+    }
+
+    /// Kill the hub process
+    pub fn kill(&mut self) -> Result<()> {
+        self.process.kill()?;
+        Ok(())
+    }
+}
+
+impl Drop for HttpTestHub {
+    fn drop(&mut self) {
+        let _ = self.kill();
+    }
 }
 
 /// Create a mock initialize response

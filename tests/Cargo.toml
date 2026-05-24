@@ -25,3 +25,23 @@ path = "src/bin/mock_server.rs"
 [[test]]
 name = "passthrough"
 path = "tests/passthrough.rs"
+
+[[test]]
+name = "circuit_breaker_test"
+path = "tests/circuit_breaker_test.rs"
+
+[[test]]
+name = "auth_test"
+path = "tests/auth_test.rs"
+
+[[test]]
+name = "admin_api_test"
+path = "tests/admin_api_test.rs"
+
+[[test]]
+name = "error_handling_test"
+path = "tests/error_handling_test.rs"
+
+[[test]]
+name = "e2e_binary_test"
+path = "tests/e2e_binary_test.rs"

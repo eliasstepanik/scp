@@ -21,7 +21,6 @@ fn create_test_config(short_circuit_below_tokens: usize) -> FilterConfig {
         progressive_disclosure_enabled: true,
         short_circuit_below_tokens,
         embedding: Default::default(),
-        intent_hint_enabled: true,
         progressive_hint_text: "[SCP: {shown} of {total} results shown. Call scp_get_more(request_id=\"{id}\") for more.]".to_string(),
     }
 }

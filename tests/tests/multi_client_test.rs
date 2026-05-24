@@ -24,11 +24,8 @@ async fn test_multi_client_tools_list_and_call() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300, // session_timeout_secs
         4000, // request_token_budget
-        300, // tool_cache_ttl_secs
-        &filter_config,
+        300, // fanout_timeout_secs
     ));
 
     // Create two sessions (simulating two clients)
@@ -49,8 +46,8 @@ async fn test_multi_client_tools_list_and_call() {
     // Test tools/list for both clients
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
 
-    let resp1 = router.route(&session1_id, list_req.clone()).await;
-    let resp2 = router.route(&session2_id, list_req.clone()).await;
+    let resp1 = router.route(list_req.clone()).await;
+    let resp2 = router.route(list_req.clone()).await;
 
     // Both should get successful responses
     assert!(resp1.result.is_some(), "Client 1 should get result");
@@ -70,8 +67,8 @@ async fn test_multi_client_tools_list_and_call() {
         })),
     );
 
-    let resp1_call = router.route(&session1_id, call_req.clone()).await;
-    let resp2_call = router.route(&session2_id, call_req.clone()).await;
+    let resp1_call = router.route(call_req.clone()).await;
+    let resp2_call = router.route(call_req.clone()).await;
 
     // Both should get responses (either result or error)
     // The important thing is that each client gets their own response with their ID
@@ -96,11 +93,8 @@ async fn test_session_budget_isolation() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
-        300, // tool_cache_ttl_secs
-        &filter_config,
+        300,
     ));
 
     // Create two sessions with different budgets
@@ -114,8 +108,8 @@ async fn test_session_budget_isolation() {
     // Both clients should be able to make requests independently
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
 
-    let resp1 = router.route(&session1_id, list_req.clone()).await;
-    let resp2 = router.route(&session2_id, list_req.clone()).await;
+    let resp1 = router.route(list_req.clone()).await;
+    let resp2 = router.route(list_req.clone()).await;
 
     // Both should succeed - they have separate budgets
     assert!(resp1.result.is_some(), "Client 1 should get result");
@@ -145,11 +139,8 @@ async fn test_request_id_isolation() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
-        300, // tool_cache_ttl_secs
-        &filter_config,
+        300,
     ));
 
     // Create two sessions
@@ -164,8 +155,8 @@ async fn test_request_id_isolation() {
     let req_id = RequestId::Number(42);
     let list_req = JsonRpcRequest::new(req_id.clone(), "tools/list".to_string(), None);
 
-    let resp1 = router.route(&session1_id, list_req.clone()).await;
-    let resp2 = router.route(&session2_id, list_req.clone()).await;
+    let resp1 = router.route(list_req.clone()).await;
+    let resp2 = router.route(list_req.clone()).await;
 
     // Each client should receive their own response with their request ID
     assert_eq!(resp1.id, Some(RequestId::Number(42)), "Client 1 should get ID 42");
@@ -241,11 +232,8 @@ async fn test_concurrent_requests_same_session() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
-        300, // tool_cache_ttl_secs
-        &filter_config,
+        300,
     ));
 
     // Create a session
@@ -257,7 +245,6 @@ async fn test_concurrent_requests_same_session() {
     let mut handles = vec![];
 
     for i in 1..=5 {
-        let session_id_clone = session_id.clone();
         let router_clone = router.clone();
 
         let handle = tokio::spawn(async move {
@@ -266,7 +253,7 @@ async fn test_concurrent_requests_same_session() {
                 "tools/list".to_string(),
                 None,
             );
-            router_clone.route(&session_id_clone, req).await
+            router_clone.route(req).await
         });
 
         handles.push(handle);
@@ -299,11 +286,8 @@ async fn test_session_isolation() {
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        session_store.clone(),
-        300,
         4000,
-        300, // tool_cache_ttl_secs
-        &filter_config,
+        300,
     ));
 
     // Create three sessions
@@ -323,9 +307,9 @@ async fn test_session_isolation() {
     // Make requests from each session
     let req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
 
-    let resp1 = router.route(&session1_id, req.clone()).await;
-    let resp2 = router.route(&session2_id, req.clone()).await;
-    let resp3 = router.route(&session3_id, req.clone()).await;
+    let resp1 = router.route(req.clone()).await;
+    let resp2 = router.route(req.clone()).await;
+    let resp3 = router.route(req.clone()).await;
 
     // All should succeed
     assert!(resp1.result.is_some());
