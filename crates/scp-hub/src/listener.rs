@@ -5,7 +5,7 @@ use axum::{
     extract::State,
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
-    response::{sse::Event, Response, Sse},
+    response::{sse::{Event, KeepAlive}, Response, Sse},
     routing::{delete, get, post},
     Json, Router as AxumRouter,
 };
@@ -426,10 +426,10 @@ async fn handle_get_mcp(
 
     // Immediate keepalive comment sent right when the connection is accepted.
     // MCP clients (e.g. opencode) time out if they receive zero bytes after
-    // the HTTP 200 response, so we flush `: ok` before waiting for any real
-    // event.
+    // the HTTP 200 response, so we flush `: keepalive` before waiting for any
+    // real event.
     let initial = stream::once(async {
-        Ok::<Event, std::convert::Infallible>(Event::default().comment("ok"))
+        Ok::<Event, std::convert::Infallible>(Event::default().comment("keepalive"))
     });
 
     // Periodic keepalive every 15 seconds so the connection stays alive when
@@ -464,7 +464,8 @@ async fn handle_get_mcp(
     // prepend the single initial keepalive.
     let stream = initial.chain(stream::select(events, keepalive));
 
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive")))
 }
 
 /// DELETE /mcp — close session
