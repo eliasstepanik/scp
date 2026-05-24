@@ -147,7 +147,12 @@ impl ToolRegistry {
                     // Remove the unqualified alias if it still points at this
                     // (now-removed) qualified name.  Do NOT restore it — the
                     // tool no longer exists in the registry after this call.
-                    if self.aliases.get(original_name).map(|q| q == qualified_name).unwrap_or(false) {
+                    if self
+                        .aliases
+                        .get(original_name)
+                        .map(|q| q == qualified_name)
+                        .unwrap_or(false)
+                    {
                         self.aliases.remove(original_name);
                     }
 

@@ -258,9 +258,7 @@ impl PoolManager {
     }
 
     /// List all servers with their configs and current states.
-    pub async fn list_server_configs(
-        &self,
-    ) -> Vec<(String, ServerConfig, ServerState)> {
+    pub async fn list_server_configs(&self) -> Vec<(String, ServerConfig, ServerState)> {
         let servers = self.servers.read().await;
         let mut result = Vec::new();
         for (name, entry) in servers.iter() {

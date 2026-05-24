@@ -1,0 +1,50 @@
+﻿config_version = 1
+
+[hub]
+listen_address = "127.0.0.1"
+listen_port = 3100
+session_timeout_secs = 300
+tool_cache_ttl_secs = 30
+shutdown_timeout_secs = 5
+
+[hub.defaults]
+request_token_budget = 4000
+session_token_budget = 32000
+max_tools_exposed = 20
+fanout_timeout_secs = 5
+max_requests_per_min = 100
+burst_size = 20
+
+[hub.auth]
+method = "bearer"
+
+[hub.auth.profiles.test]
+token = "scp-test-token-abc123"
+token_budget_per_request = 4000
+rate_limit_per_minute = 60
+
+[hub.auth.profiles.ratelimited]
+token = "scp-ratelimit-token-xyz"
+token_budget_per_request = 4000
+rate_limit_per_minute = 2
+
+[admin]
+port = 3101
+
+[filter]
+enabled = true
+relevance_engine = "tags"
+
+[logging]
+level = "warn"
+json_format = false
+
+[[servers]]
+name = "mock"
+transport = "stdio"
+command = "C:\\Users\\Elias Stepanik\\OpenCloud\\Persönlich\\Dev\\Projecte\\scp\\target\\debug\\mock-mcp-server.exe"
+args = []
+sharing = "shared"
+enabled = true
+tags = ["test", "echo"]
+

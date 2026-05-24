@@ -361,8 +361,8 @@ impl SessionStore {
                 let timeout = std::time::Duration::from_secs(timeout_secs);
 
                 let expired: Vec<SessionId> = sessions
-                    .iter()
-                    .filter_map(|(_id, _session_arc)| {
+                    .values()
+                    .filter_map(|_session_arc| {
                         // We need to check last_active without blocking
                         // For now, we'll skip this check in the async context
                         // This will be improved in the actual implementation

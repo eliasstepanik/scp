@@ -264,11 +264,7 @@ async fn reload_config_handler(State(state): State<AdminState>) -> impl IntoResp
                     let _ = state.server_manager.add_server(server_cfg.clone()).await;
                 }
             }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "ok"})),
-            )
-                .into_response()
+            (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
         }
         Err(e) => (
             StatusCode::BAD_REQUEST,

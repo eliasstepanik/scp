@@ -186,9 +186,7 @@ impl HttpServerTransport {
                 .find_map(|line| line.strip_prefix("data:"))
                 .map(|s| s.trim())
                 .ok_or_else(|| {
-                    TransportError::ProcessError(
-                        "SSE response contained no data line".to_string(),
-                    )
+                    TransportError::ProcessError("SSE response contained no data line".to_string())
                 })?;
             let body: Value = serde_json::from_str(json_str).map_err(|e| {
                 TransportError::ProcessError(format!("Failed to parse SSE JSON: {}", e))
