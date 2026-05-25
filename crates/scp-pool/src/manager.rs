@@ -162,7 +162,8 @@ impl PoolManager {
                         .with_label_values(&[name])
                         .set(1.0);
 
-                    let pool = Arc::new(SharedPool::new(transport));
+                    let (pool, receiver) = SharedPool::new(transport);
+                    let pool = Arc::new(pool);
 
                     // Store pool under write lock before spawning the recovery loop
                     {
@@ -184,10 +185,25 @@ impl PoolManager {
                     let receive_handle = tokio::spawn(async move {
                         const MAX_RETRIES: u32 = 5;
                         let mut current_pool = pool;
+                        // Wrap in Option so we can move it into receive_loop each
+                        // iteration and replenish it after a successful respawn.
+                        let mut current_receiver = Some(receiver);
 
                         loop {
-                            // Run receive loop until it exits
-                            if let Err(e) = current_pool.receive_loop(&name_for_loop).await {
+                            // Take the receiver — it is moved into receive_loop so
+                            // the loop holds no lock while awaiting stdout.
+                            let recv = match current_receiver.take() {
+                                Some(r) => r,
+                                None => {
+                                    error!(
+                                        "receive_loop for '{}': no receiver available",
+                                        name_for_loop
+                                    );
+                                    break;
+                                }
+                            };
+
+                            if let Err(e) = current_pool.receive_loop(recv, &name_for_loop).await {
                                 error!("receive_loop for '{}' exited: {}", name_for_loop, e);
                             }
 
@@ -237,7 +253,9 @@ impl PoolManager {
                                             .with_label_values(&[&name_for_loop])
                                             .set(1.0);
 
-                                        let new_pool = Arc::new(SharedPool::new(new_transport));
+                                        let (new_pool, new_receiver) =
+                                            SharedPool::new(new_transport);
+                                        let new_pool = Arc::new(new_pool);
 
                                         // Update entry with fresh pool
                                         {
@@ -259,6 +277,7 @@ impl PoolManager {
                                         );
 
                                         current_pool = new_pool;
+                                        current_receiver = Some(new_receiver);
                                         restarted = true;
                                         break;
                                     }

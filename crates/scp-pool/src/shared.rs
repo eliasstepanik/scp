@@ -1,6 +1,6 @@
 use crate::metrics::{SCP_POOL_ACTIVE_PROCESSES, SCP_POOL_CRASHES_TOTAL};
 use scp_core::protocol::{IncomingMessage, JsonRpcRequest, JsonRpcResponse, RequestId};
-use scp_transport::stdio_server::StdioServerTransport;
+use scp_transport::stdio_server::{StdioReceiver, StdioSender, StdioServerTransport};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,28 +28,39 @@ pub enum PoolError {
     Internal(String),
 }
 
-/// Shared pool wraps a single transport with request serialization
+/// Shared pool wraps a single transport with request serialization.
+///
+/// Send and receive are kept on separate primitives so that the receive loop
+/// can wait for messages without blocking concurrent senders.
 pub struct SharedPool {
-    transport: Arc<Mutex<StdioServerTransport>>,
+    /// Send half — mutex-serialises concurrent writers.
+    sender: Arc<Mutex<StdioSender>>,
+    /// Pending requests waiting for a response, keyed by internal request ID.
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
+    /// Guarantees the MCP `initialize` handshake is performed exactly once.
     initialized: OnceCell<()>,
 }
 
 impl SharedPool {
-    /// Create a new shared pool from a transport
-    pub fn new(transport: StdioServerTransport) -> Self {
-        Self {
-            transport: Arc::new(Mutex::new(transport)),
+    /// Create a new shared pool from a transport.
+    ///
+    /// **Important:** the receive half must be handed to `receive_loop` before
+    /// any `call`/`send_request` is issued, otherwise responses will never be
+    /// dispatched and callers will time out.
+    pub fn new(transport: StdioServerTransport) -> (Self, StdioReceiver) {
+        let (sender, receiver) = transport.into_split();
+        let pool = Self {
+            sender: Arc::new(Mutex::new(sender)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             initialized: OnceCell::new(),
-        }
+        };
+        (pool, receiver)
     }
 
-    /// Ensure the MCP session is initialized (idempotent, race-free)
+    /// Ensure the MCP session is initialized (idempotent, race-free).
     async fn ensure_initialized(&self) -> Result<(), PoolError> {
         self.initialized
             .get_or_try_init(|| async {
-                // Send initialize request
                 let init_id = format!("scp-init-{}", Uuid::new_v4());
                 let init_req = serde_json::json!({
                     "jsonrpc": "2.0",
@@ -69,27 +80,27 @@ impl SharedPool {
                 }
 
                 {
-                    let transport = self.transport.lock().await;
-                    transport
+                    let sender = self.sender.lock().await;
+                    sender
                         .send(&init_req)
                         .await
                         .map_err(|e| PoolError::TransportError(e.to_string()))?;
                 }
 
-                // Wait for initialize response
+                // Wait for initialize response (dispatched by the receive loop).
                 tokio::time::timeout(std::time::Duration::from_secs(30), rx)
                     .await
                     .map_err(|_| PoolError::Timeout)?
                     .map_err(|_| PoolError::Cancelled)?;
 
-                // Send initialized notification (no response expected)
+                // Send initialized notification (no response expected).
                 let notif = serde_json::json!({
                     "jsonrpc": "2.0",
                     "method": "notifications/initialized"
                 });
                 {
-                    let transport = self.transport.lock().await;
-                    transport
+                    let sender = self.sender.lock().await;
+                    sender
                         .send(&notif)
                         .await
                         .map_err(|e| PoolError::TransportError(e.to_string()))?;
@@ -102,7 +113,7 @@ impl SharedPool {
             .map(|_| ())
     }
 
-    /// Send a method call and return the result Value
+    /// Send a method call and return the result Value.
     pub async fn call(&self, method: &str, params: Option<Value>) -> Result<Value, PoolError> {
         self.ensure_initialized().await?;
 
@@ -122,8 +133,8 @@ impl SharedPool {
         }
 
         {
-            let transport = self.transport.lock().await;
-            transport
+            let sender = self.sender.lock().await;
+            sender
                 .send(&request_value)
                 .await
                 .map_err(|e| PoolError::TransportError(e.to_string()))?;
@@ -148,33 +159,27 @@ impl SharedPool {
             .ok_or_else(|| PoolError::Internal("Response has no result".to_string()))
     }
 
-    /// Send a raw JsonRpcRequest and wait for response (low-level)
+    /// Send a raw JsonRpcRequest and wait for response (low-level).
     pub async fn send_request(
         &self,
         mut request: JsonRpcRequest,
     ) -> Result<JsonRpcResponse, PoolError> {
-        // Generate internal request ID
         let internal_id = format!("scp-{}-{}", Uuid::new_v4(), Uuid::new_v4());
         let original_id = request.id.clone();
 
-        // Store original ID for mapping back
         request.id = Some(RequestId::String(internal_id.clone()));
 
-        // Create response channel
         let (tx, rx) = oneshot::channel();
-
-        // Register pending request
         {
             let mut pending = self.pending.lock().await;
             pending.insert(internal_id.clone(), tx);
         }
 
-        // Send request
         {
-            let transport = self.transport.lock().await;
+            let sender = self.sender.lock().await;
             let request_value =
                 serde_json::to_value(&request).map_err(|e| PoolError::Internal(e.to_string()))?;
-            transport
+            sender
                 .send(&request_value)
                 .await
                 .map_err(|e| PoolError::TransportError(e.to_string()))?;
@@ -182,13 +187,11 @@ impl SharedPool {
 
         debug!("Request sent with internal ID: {}", internal_id);
 
-        // Wait for response with timeout
         let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
             .await
             .map_err(|_| PoolError::Timeout)?
             .map_err(|_| PoolError::Cancelled)?;
 
-        // Map response ID back to original
         let mut mapped_response = response;
         mapped_response.id = original_id;
 
@@ -196,28 +199,34 @@ impl SharedPool {
     }
 
     /// Receive responses from the transport and dispatch to pending requests.
+    ///
+    /// Takes ownership of the `StdioReceiver` so it can await messages without
+    /// holding any lock, allowing concurrent sends to proceed freely.
+    ///
     /// `server_name` is used to label Prometheus metrics on error exit.
-    pub async fn receive_loop(&self, server_name: &str) -> Result<(), PoolError> {
+    pub async fn receive_loop(
+        &self,
+        mut receiver: StdioReceiver,
+        server_name: &str,
+    ) -> Result<(), PoolError> {
         loop {
-            let msg = {
-                let mut transport = self.transport.lock().await;
-                match transport.receive().await {
-                    Ok(m) => m,
-                    Err(e) => {
-                        SCP_POOL_CRASHES_TOTAL
-                            .with_label_values(&[server_name])
-                            .inc();
-                        SCP_POOL_ACTIVE_PROCESSES
-                            .with_label_values(&[server_name])
-                            .set(0.0);
-                        return Err(PoolError::TransportError(e.to_string()));
-                    }
+            // Await the next message WITHOUT holding any lock — this is the key
+            // fix that prevents deadlock with concurrent senders.
+            let msg = match receiver.receive().await {
+                Ok(m) => m,
+                Err(e) => {
+                    SCP_POOL_CRASHES_TOTAL
+                        .with_label_values(&[server_name])
+                        .inc();
+                    SCP_POOL_ACTIVE_PROCESSES
+                        .with_label_values(&[server_name])
+                        .set(0.0);
+                    return Err(PoolError::TransportError(e.to_string()));
                 }
             };
 
             match msg {
                 Some(IncomingMessage::Response(response)) => {
-                    // Extract internal ID from response
                     if let Some(RequestId::String(id)) = &response.id {
                         let mut pending = self.pending.lock().await;
                         if let Some(tx) = pending.remove(id) {
@@ -229,13 +238,12 @@ impl SharedPool {
                     }
                 }
                 Some(IncomingMessage::Notification(_)) => {
-                    // Notifications are not tracked, just ignore
+                    // Notifications are not tracked, just ignore.
                 }
                 Some(IncomingMessage::Request(_)) => {
-                    // Unexpected server-initiated request — ignore
+                    // Unexpected server-initiated request — ignore.
                 }
                 None => {
-                    // Transport closed — record crash and mark process inactive
                     SCP_POOL_CRASHES_TOTAL
                         .with_label_values(&[server_name])
                         .inc();
@@ -253,7 +261,6 @@ impl SharedPool {
 mod tests {
     #[test]
     fn test_shared_pool_creation() {
-        // This test just verifies the struct can be created
-        // Full testing requires a mock transport
+        // Full testing requires a mock transport.
     }
 }

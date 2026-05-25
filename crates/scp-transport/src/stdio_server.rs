@@ -8,6 +8,42 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
+/// Send half of a split stdio transport.  Cheap to clone; can be sent across tasks.
+#[derive(Clone)]
+pub struct StdioSender {
+    stdin_tx: mpsc::Sender<String>,
+}
+
+impl StdioSender {
+    /// Send a JSON-RPC message to the child process.
+    pub async fn send(&self, msg: &Value) -> Result<(), TransportError> {
+        let json_str = serde_json::to_string(msg)?;
+        self.stdin_tx
+            .send(json_str)
+            .await
+            .map_err(|_| TransportError::ConnectionClosed)?;
+        Ok(())
+    }
+}
+
+/// Receive half of a split stdio transport.  Not Clone; owned by the receive loop.
+pub struct StdioReceiver {
+    stdout_rx: mpsc::Receiver<String>,
+}
+
+impl StdioReceiver {
+    /// Receive the next JSON-RPC message from the child process.
+    pub async fn receive(&mut self) -> Result<Option<IncomingMessage>, TransportError> {
+        match self.stdout_rx.recv().await {
+            Some(line) => {
+                let msg: IncomingMessage = serde_json::from_str(&line)?;
+                Ok(Some(msg))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
 /// Server-facing stdio transport (spawns a child process)
 pub struct StdioServerTransport {
     #[allow(dead_code)]
@@ -70,6 +106,21 @@ impl StdioServerTransport {
             _stdout_task: stdout_task,
             _stderr_task: stderr_task,
         })
+    }
+
+    /// Split the transport into independent send and receive halves.
+    ///
+    /// After splitting, the original `StdioServerTransport` must not be used.
+    /// The child process and background I/O tasks remain alive as long as either
+    /// half (or the original struct) is alive.
+    pub fn into_split(self) -> (StdioSender, StdioReceiver) {
+        let sender = StdioSender {
+            stdin_tx: self.stdin_tx,
+        };
+        let receiver = StdioReceiver {
+            stdout_rx: self.stdout_rx,
+        };
+        (sender, receiver)
     }
 
     /// Send a JSON-RPC message to the child process
