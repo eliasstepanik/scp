@@ -206,7 +206,8 @@ impl Session {
         {
             if let Some(oldest) = self.chunk_cache_order.pop_front() {
                 if let Some(evicted) = self.chunk_cache.remove(&oldest) {
-                    self.chunk_cache_bytes = self.chunk_cache_bytes
+                    self.chunk_cache_bytes = self
+                        .chunk_cache_bytes
                         .saturating_sub(evicted.iter().map(|c| c.text.len()).sum::<usize>());
                 }
             }
@@ -216,7 +217,8 @@ impl Session {
         while self.chunk_cache.len() >= MAX_CACHE && !self.chunk_cache_order.is_empty() {
             if let Some(oldest) = self.chunk_cache_order.pop_front() {
                 if let Some(evicted) = self.chunk_cache.remove(&oldest) {
-                    self.chunk_cache_bytes = self.chunk_cache_bytes
+                    self.chunk_cache_bytes = self
+                        .chunk_cache_bytes
                         .saturating_sub(evicted.iter().map(|c| c.text.len()).sum::<usize>());
                 }
             }
