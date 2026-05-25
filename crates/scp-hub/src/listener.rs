@@ -277,9 +277,10 @@ async fn handle_post_mcp_inner(
         (4000, 60)
     };
 
-    // Get or create session
+    // Get or create session — if a session ID is provided but not found, create a new one
+    // transparently so that reconnecting clients don't receive 404 errors.
     let session_id = if let Some(session_id_header) = headers.get("Mcp-Session-Id") {
-        session_id_header
+        let requested_id = session_id_header
             .to_str()
             .map_err(|_| {
                 (
@@ -287,7 +288,17 @@ async fn handle_post_mcp_inner(
                     "Invalid session ID header".to_string(),
                 )
             })?
-            .to_string()
+            .to_string();
+        // If the session still exists, reuse it; otherwise silently create a new one.
+        if state.session_store.get(&requested_id).await.is_some() {
+            requested_id
+        } else {
+            let (id, _rx) = state
+                .session_store
+                .create(None, profile_name.clone(), budget, rate_limit)
+                .await;
+            id
+        }
     } else {
         // Create new session with profile
         let (id, _rx) = state
@@ -464,9 +475,10 @@ async fn handle_get_mcp(
         (4000, 60)
     };
 
-    // Get or create session
+    // Get or create session — if a session ID is provided but not found, create a new one
+    // transparently so that reconnecting clients don't receive 404 errors.
     let session_id = if let Some(session_id_header) = headers.get("Mcp-Session-Id") {
-        session_id_header
+        let requested_id = session_id_header
             .to_str()
             .map_err(|_| {
                 (
@@ -474,7 +486,17 @@ async fn handle_get_mcp(
                     "Invalid session ID header".to_string(),
                 )
             })?
-            .to_string()
+            .to_string();
+        // If the session still exists, reuse it; otherwise silently create a new one.
+        if state.session_store.get(&requested_id).await.is_some() {
+            requested_id
+        } else {
+            let (id, _rx) = state
+                .session_store
+                .create(None, profile_name.clone(), budget, rate_limit)
+                .await;
+            id
+        }
     } else {
         // Create new session with profile
         let (id, _rx) = state

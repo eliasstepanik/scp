@@ -133,8 +133,13 @@ async fn main() -> Result<()> {
 
     // Create session store
     let session_store = Arc::new(session_store::SessionStore::new(
-        config.hub.session_timeout_secs as usize,
+        config.hub.defaults.request_token_budget,
     ));
+
+    // Start background cleanup task for expired sessions
+    let _cleanup_handle = session_store
+        .clone()
+        .start_cleanup_task(config.hub.session_timeout_secs);
 
     // Create router
     let router = Arc::new(router::Router::new(
