@@ -11,6 +11,10 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
+fn make_filter_pipeline() -> Arc<FilterPipeline> {
+    Arc::new(FilterPipeline::new(&FilterConfig::default()))
+}
+
 // ============================================================================
 // Test 1: test_progressive_disclosure_end_to_end
 // ============================================================================
@@ -37,6 +41,7 @@ async fn test_progressive_disclosure_end_to_end() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     // Create a session
@@ -194,6 +199,7 @@ async fn test_extension_tools_always_present() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     // Create a session
@@ -201,7 +207,7 @@ async fn test_extension_tools_always_present() {
 
     // Send a tools/list request
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
-    let resp = router.route(list_req).await;
+    let resp = router.route(list_req, None).await;
 
     // Parse the response
     assert!(resp.result.is_some(), "tools/list should return a result");
@@ -264,6 +270,7 @@ async fn test_scp_info_returns_version() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     let (_session_id, _rx) = session_store.create_with_defaults(None).await;
@@ -278,7 +285,7 @@ async fn test_scp_info_returns_version() {
         })),
     );
 
-    let resp = router.route(call_req).await;
+    let resp = router.route(call_req, None).await;
 
     // Parse the response
     assert!(

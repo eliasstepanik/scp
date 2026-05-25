@@ -1,12 +1,16 @@
+use crate::session_store::Session;
 use scp_core::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, RequestId};
+use scp_filter::dedup::DeliveryLog;
+use scp_filter::pipeline::{FilterContext, FilterPipeline};
 use scp_index::{ToolEntry, ToolRegistry};
 use scp_pool::PoolManager;
 use scp_transport::http_server::HttpServerTransport;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Router error types
 #[derive(Debug, Error)]
@@ -37,6 +41,7 @@ pub struct Router {
     fanout_timeout_secs: u64,
     request_token_budget: usize,
     max_response_size_bytes: Option<usize>,
+    filter_pipeline: Arc<FilterPipeline>,
 }
 
 impl Router {
@@ -47,6 +52,7 @@ impl Router {
         tool_registry: Arc<RwLock<ToolRegistry>>,
         fanout_timeout_secs: u64,
         request_token_budget: usize,
+        filter_pipeline: Arc<FilterPipeline>,
     ) -> Self {
         Self {
             pool_manager,
@@ -54,6 +60,7 @@ impl Router {
             fanout_timeout_secs,
             request_token_budget,
             max_response_size_bytes: Some(1_048_576),
+            filter_pipeline,
         }
     }
 
@@ -91,13 +98,21 @@ impl Router {
         (tool_count, server_count)
     }
 
-    /// Route a request to the appropriate backend
+    /// Route a request to the appropriate backend.
+    ///
+    /// An optional `session` can be supplied; for `tools/call` requests the session's
+    /// keyword accumulator is fed with the call arguments before the backend request is
+    /// made, so relevance scoring has query terms ready.
     #[allow(dead_code)]
-    pub async fn route(&self, request: JsonRpcRequest) -> JsonRpcResponse {
+    pub async fn route(
+        &self,
+        request: JsonRpcRequest,
+        session: Option<Arc<Mutex<Session>>>,
+    ) -> JsonRpcResponse {
         match request.method.as_str() {
             "ping" => self.handle_ping(&request),
             "tools/list" => self.handle_tools_list(&request).await,
-            "tools/call" => self.handle_tools_call(&request).await,
+            "tools/call" => self.handle_tools_call(&request, session).await,
             "initialize" => self.handle_initialize(&request).await,
             _ => self.handle_unknown(&request),
         }
@@ -333,7 +348,11 @@ impl Router {
     }
 
     /// Handle tools/call request (route to specific server)
-    async fn handle_tools_call(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+    async fn handle_tools_call(
+        &self,
+        request: &JsonRpcRequest,
+        session: Option<Arc<Mutex<Session>>>,
+    ) -> JsonRpcResponse {
         debug!("Handling tools/call request");
 
         // Extract tool name from params
@@ -356,6 +375,38 @@ impl Router {
                 );
             }
         };
+
+        // Feed tool call arguments into the keyword accumulator before reading state,
+        // so top_k() includes terms from the current request.
+        if let Some(sess) = &session {
+            let args_opt = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("arguments"))
+                .cloned();
+            if let Some(args) = args_opt {
+                let mut s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                s.feed_tool_args(&args);
+            }
+        }
+
+        // Extract session state (hold lock briefly to avoid holding across await)
+        let (delivery_log, query_terms, budget, session_id_str) =
+            if let Some(sess) = &session {
+                let s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                let terms = s.current_query_terms(20);
+                let budget = s.token_budget_remaining;
+                let sid = s.id.clone();
+                let log = s.delivery_log.clone();
+                (log, terms, budget, sid)
+            } else {
+                (
+                    Arc::new(Mutex::new(DeliveryLog::new(1000))),
+                    vec![],
+                    self.request_token_budget,
+                    "anonymous".to_string(),
+                )
+            };
 
         // If tool_name is slash-qualified (e.g. "memory-global/search_memory"), route directly
         // to the named server without a registry lookup.
@@ -381,10 +432,56 @@ impl Router {
                         .get("result")
                         .cloned()
                         .unwrap_or(response_body);
+
+                    // Run filter pipeline on backend response
+                    let content_value = result
+                        .get("content")
+                        .cloned()
+                        .unwrap_or_else(|| result.clone());
+                    let request_id = Uuid::new_v4().to_string();
+                    let filter_ctx = FilterContext {
+                        session_id: session_id_str.clone(),
+                        tool_name: actual_tool.clone(),
+                        budget_tokens: budget,
+                        query_terms: query_terms.clone(),
+                        delivery_log: delivery_log.clone(),
+                        short_circuit_below_tokens: self.filter_pipeline.short_circuit_below_tokens,
+                        request_id: request_id.clone(),
+                    };
+                    let filter_result =
+                        self.filter_pipeline.run(&content_value, &filter_ctx).await;
+
+                    if !filter_result.dropped_chunks.is_empty() {
+                        info!(
+                            session_id = %session_id_str,
+                            tool_name = %actual_tool,
+                            tokens_delivered = filter_result.tokens_delivered,
+                            dropped_count = filter_result.dropped_chunks.len(),
+                            "filter pipeline dropped chunks"
+                        );
+                    }
+
+                    // Update session state
+                    if let Some(sess) = &session {
+                        let mut s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                        s.token_budget_remaining = s
+                            .token_budget_remaining
+                            .saturating_sub(filter_result.tokens_delivered);
+                        if !filter_result.dropped_chunks.is_empty() {
+                            s.store_chunks(
+                                request_id.clone(),
+                                filter_result.dropped_chunks.clone(),
+                            );
+                        }
+                    }
+
+                    let filtered_result = json!({
+                        "content": [{"type": "text", "text": filter_result.content}]
+                    });
                     JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         id: request.id.clone(),
-                        result: Some(result),
+                        result: Some(filtered_result),
                         error: None,
                     }
                 }
@@ -414,46 +511,97 @@ impl Router {
                 };
             }
             "scp_budget" => {
+                let (remaining, total) = if let Some(sess) = &session {
+                    let s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                    (s.token_budget_remaining, self.request_token_budget)
+                } else {
+                    (self.request_token_budget, self.request_token_budget)
+                };
+                let text = serde_json::to_string(&json!({
+                    "remaining": remaining,
+                    "total": total,
+                    "used": total.saturating_sub(remaining)
+                }))
+                .unwrap_or_default();
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
                     result: Some(json!({
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": r#"{"remaining": 4000, "total": 4000}"#
-                            }
-                        ]
+                        "content": [{"type": "text", "text": text}]
                     })),
                     error: None,
                 };
             }
             "scp_budget_reset" => {
+                if let Some(sess) = &session {
+                    let mut s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                    s.token_budget_remaining = self.request_token_budget;
+                }
+                let text = serde_json::to_string(&json!({
+                    "status": "reset",
+                    "new_budget": self.request_token_budget
+                }))
+                .unwrap_or_default();
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
                     result: Some(json!({
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": r#"{"status": "reset", "new_budget": 4000}"#
-                            }
-                        ]
+                        "content": [{"type": "text", "text": text}]
                     })),
                     error: None,
                 };
             }
             "scp_get_more" => {
+                let args = request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("arguments"))
+                    .or_else(|| request.params.as_ref());
+                let request_id = args
+                    .and_then(|p| p.get("request_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let offset = args
+                    .and_then(|p| p.get("offset"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let limit = args
+                    .and_then(|p| p.get("limit"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10) as usize;
+
+                let (items, total) = if let Some(sess) = &session {
+                    let s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(chunks) = s.get_chunks(&request_id) {
+                        let total = chunks.len();
+                        let slice: Vec<String> = chunks
+                            .iter()
+                            .skip(offset)
+                            .take(limit)
+                            .map(|c| c.text.clone())
+                            .collect();
+                        (slice, total)
+                    } else {
+                        (vec![], 0)
+                    }
+                } else {
+                    (vec![], 0)
+                };
+
+                let text = serde_json::to_string(&json!({
+                    "items": items,
+                    "offset": offset,
+                    "limit": limit,
+                    "total": total,
+                    "has_more": offset + limit < total
+                }))
+                .unwrap_or_default();
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
                     result: Some(json!({
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": r#"{"items": [], "offset": 0, "limit": 0}"#
-                            }
-                        ]
+                        "content": [{"type": "text", "text": text}]
                     })),
                     error: None,
                 };
@@ -543,10 +691,58 @@ impl Router {
                             .get("result")
                             .cloned()
                             .unwrap_or(response_body);
+
+                        // Run filter pipeline on backend response
+                        let content_value = result
+                            .get("content")
+                            .cloned()
+                            .unwrap_or_else(|| result.clone());
+                        let request_id = Uuid::new_v4().to_string();
+                        let filter_ctx = FilterContext {
+                            session_id: session_id_str.clone(),
+                            tool_name: original_name.clone(),
+                            budget_tokens: budget,
+                            query_terms: query_terms.clone(),
+                            delivery_log: delivery_log.clone(),
+                            short_circuit_below_tokens: self
+                                .filter_pipeline
+                                .short_circuit_below_tokens,
+                            request_id: request_id.clone(),
+                        };
+                        let filter_result =
+                            self.filter_pipeline.run(&content_value, &filter_ctx).await;
+
+                        if !filter_result.dropped_chunks.is_empty() {
+                            info!(
+                                session_id = %session_id_str,
+                                tool_name = %original_name,
+                                tokens_delivered = filter_result.tokens_delivered,
+                                dropped_count = filter_result.dropped_chunks.len(),
+                                "filter pipeline dropped chunks"
+                            );
+                        }
+
+                        // Update session state
+                        if let Some(sess) = &session {
+                            let mut s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                            s.token_budget_remaining = s
+                                .token_budget_remaining
+                                .saturating_sub(filter_result.tokens_delivered);
+                            if !filter_result.dropped_chunks.is_empty() {
+                                s.store_chunks(
+                                    request_id.clone(),
+                                    filter_result.dropped_chunks.clone(),
+                                );
+                            }
+                        }
+
+                        let filtered_result = json!({
+                            "content": [{"type": "text", "text": filter_result.content}]
+                        });
                         JsonRpcResponse {
                             jsonrpc: "2.0".to_string(),
                             id: request.id.clone(),
-                            result: Some(result),
+                            result: Some(filtered_result),
                             error: None,
                         }
                     }
@@ -756,12 +952,19 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scp_filter::pipeline::FilterPipeline;
+
+    fn make_filter_pipeline() -> Arc<FilterPipeline> {
+        Arc::new(FilterPipeline::new(
+            &scp_core::config::FilterConfig::default(),
+        ))
+    }
 
     #[tokio::test]
     async fn test_router_ping() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000);
+        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -770,7 +973,7 @@ mod tests {
             params: None,
         };
 
-        let response = router.route(request).await;
+        let response = router.route(request, None).await;
         assert!(response.error.is_none());
         assert!(response.result.is_some());
     }
@@ -779,7 +982,7 @@ mod tests {
     async fn test_router_unknown_method() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000);
+        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -788,7 +991,7 @@ mod tests {
             params: None,
         };
 
-        let response = router.route(request).await;
+        let response = router.route(request, None).await;
         assert!(response.error.is_some());
     }
 
@@ -796,7 +999,7 @@ mod tests {
     async fn test_tool_not_found_empty_registry_hint() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000);
+        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -805,7 +1008,7 @@ mod tests {
             params: Some(serde_json::json!({ "name": "nonexistent_tool", "arguments": {} })),
         };
 
-        let response = router.route(request).await;
+        let response = router.route(request, None).await;
         assert!(response.error.is_some());
         let msg = response.error.unwrap().message;
         assert!(
@@ -839,7 +1042,7 @@ mod tests {
             );
         }
 
-        let router = Router::new(pool_manager, tool_registry, 5, 4000);
+        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -848,7 +1051,7 @@ mod tests {
             params: Some(serde_json::json!({ "name": "unknown_tool", "arguments": {} })),
         };
 
-        let response = router.route(request).await;
+        let response = router.route(request, None).await;
         assert!(response.error.is_some());
         let msg = response.error.unwrap().message;
         assert!(
@@ -865,8 +1068,8 @@ mod tests {
     fn test_response_truncated_when_exceeds_limit() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router =
-            Router::new(pool_manager, tool_registry, 5, 4000).with_max_response_size(Some(100));
+        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline())
+            .with_max_response_size(Some(100));
 
         // Build a response whose JSON serialization clearly exceeds 100 bytes
         let large_text = "x".repeat(200);
@@ -895,7 +1098,7 @@ mod tests {
     fn test_response_not_truncated_when_under_limit() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000)
+        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline())
             .with_max_response_size(Some(1_048_576));
 
         let small_text = "hello world";

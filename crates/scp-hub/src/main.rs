@@ -16,6 +16,7 @@ use anyhow::Result;
 use clap::Parser;
 use listener::{run_stdio_client, ClientListener};
 use scp_core::config::load_config;
+use scp_filter::pipeline::FilterPipeline;
 use scp_index::ToolRegistry;
 use scp_pool::PoolManager;
 use std::net::SocketAddr;
@@ -141,12 +142,16 @@ async fn main() -> Result<()> {
         .clone()
         .start_cleanup_task(config.hub.session_timeout_secs);
 
+    // Create filter pipeline
+    let filter_pipeline = Arc::new(FilterPipeline::new(&config.filter));
+
     // Create router
     let router = Arc::new(router::Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
         config.hub.session_timeout_secs,
-        4000, // request_token_budget
+        config.hub.defaults.request_token_budget,
+        filter_pipeline,
     ));
 
     // Create a shared shutdown signal

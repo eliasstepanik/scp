@@ -1,4 +1,6 @@
+use scp_core::config::FilterConfig;
 use scp_core::protocol::{JsonRpcRequest, RequestId};
+use scp_filter::pipeline::FilterPipeline;
 use scp_hub::router::Router;
 use scp_hub::session_store::SessionStore;
 use scp_index::ToolEntry;
@@ -7,6 +9,10 @@ use scp_pool::PoolManager;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+fn make_filter_pipeline() -> Arc<FilterPipeline> {
+    Arc::new(FilterPipeline::new(&FilterConfig::default()))
+}
 
 // ============================================================================
 // Test 1: test_tools_list_scoring_respects_context
@@ -295,6 +301,7 @@ async fn test_tool_cache_invalidation_on_list_changed() {
         tool_registry.clone(),
         300,
         4000,
+        make_filter_pipeline(),
     ));
 
     // Register some tools
@@ -315,7 +322,7 @@ async fn test_tool_cache_invalidation_on_list_changed() {
 
     // Call tools/list to populate cache
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
-    let resp1 = router.route(list_req.clone()).await;
+    let resp1 = router.route(list_req.clone(), None).await;
     assert!(resp1.result.is_some(), "First tools/list should succeed");
 
     // Call tools/list_changed notification
@@ -326,7 +333,7 @@ async fn test_tool_cache_invalidation_on_list_changed() {
             "server": "server_a"
         })),
     );
-    let resp2 = router.route(changed_req).await;
+    let resp2 = router.route(changed_req, None).await;
     // The notification should be handled (either result or error is acceptable)
     assert!(
         resp2.result.is_some() || resp2.error.is_some(),
@@ -335,7 +342,7 @@ async fn test_tool_cache_invalidation_on_list_changed() {
 
     // Call tools/list again - should trigger a fresh fan-out (cache invalidated)
     let list_req2 = JsonRpcRequest::new(RequestId::Number(3), "tools/list".to_string(), None);
-    let resp3 = router.route(list_req2).await;
+    let resp3 = router.route(list_req2, None).await;
     assert!(resp3.result.is_some(), "Second tools/list should succeed");
 
     // Both responses should be successful (the important thing is that cache invalidation

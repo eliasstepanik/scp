@@ -1,5 +1,6 @@
 use scp_core::config::FilterConfig;
 use scp_core::protocol::{JsonRpcRequest, RequestId};
+use scp_filter::pipeline::FilterPipeline;
 use scp_hub::router::Router;
 use scp_hub::session_store::SessionStore;
 use scp_index::ToolRegistry;
@@ -9,6 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
+
+fn make_filter_pipeline() -> Arc<FilterPipeline> {
+    Arc::new(FilterPipeline::new(&FilterConfig::default()))
+}
 
 // ============================================================================
 // Test 1: Two clients with separate sessions, each calls tools/list and tools/call
@@ -26,6 +31,7 @@ async fn test_multi_client_tools_list_and_call() {
         tool_registry.clone(),
         4000, // request_token_budget
         300,  // fanout_timeout_secs
+        make_filter_pipeline(),
     ));
 
     // Create two sessions (simulating two clients)
@@ -51,8 +57,8 @@ async fn test_multi_client_tools_list_and_call() {
     // Test tools/list for both clients
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
 
-    let resp1 = router.route(list_req.clone()).await;
-    let resp2 = router.route(list_req.clone()).await;
+    let resp1 = router.route(list_req.clone(), None).await;
+    let resp2 = router.route(list_req.clone(), None).await;
 
     // Both should get successful responses
     assert!(resp1.result.is_some(), "Client 1 should get result");
@@ -72,8 +78,8 @@ async fn test_multi_client_tools_list_and_call() {
         })),
     );
 
-    let resp1_call = router.route(call_req.clone()).await;
-    let resp2_call = router.route(call_req.clone()).await;
+    let resp1_call = router.route(call_req.clone(), None).await;
+    let resp2_call = router.route(call_req.clone(), None).await;
 
     // Both should get responses (either result or error)
     // The important thing is that each client gets their own response with their ID
@@ -114,6 +120,7 @@ async fn test_session_budget_isolation() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     // Create two sessions with different budgets
@@ -127,8 +134,8 @@ async fn test_session_budget_isolation() {
     // Both clients should be able to make requests independently
     let list_req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
 
-    let resp1 = router.route(list_req.clone()).await;
-    let resp2 = router.route(list_req.clone()).await;
+    let resp1 = router.route(list_req.clone(), None).await;
+    let resp2 = router.route(list_req.clone(), None).await;
 
     // Both should succeed - they have separate budgets
     assert!(resp1.result.is_some(), "Client 1 should get result");
@@ -169,6 +176,7 @@ async fn test_request_id_isolation() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     // Create two sessions
@@ -179,8 +187,8 @@ async fn test_request_id_isolation() {
     let req_id = RequestId::Number(42);
     let list_req = JsonRpcRequest::new(req_id.clone(), "tools/list".to_string(), None);
 
-    let resp1 = router.route(list_req.clone()).await;
-    let resp2 = router.route(list_req.clone()).await;
+    let resp1 = router.route(list_req.clone(), None).await;
+    let resp2 = router.route(list_req.clone(), None).await;
 
     // Each client should receive their own response with their request ID
     assert_eq!(
@@ -268,6 +276,7 @@ async fn test_concurrent_requests_same_session() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     // Create a session
@@ -281,7 +290,7 @@ async fn test_concurrent_requests_same_session() {
 
         let handle = tokio::spawn(async move {
             let req = JsonRpcRequest::new(RequestId::Number(i), "tools/list".to_string(), None);
-            router_clone.route(req).await
+            router_clone.route(req, None).await
         });
 
         handles.push(handle);
@@ -321,6 +330,7 @@ async fn test_session_isolation() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     // Create three sessions
@@ -340,9 +350,9 @@ async fn test_session_isolation() {
     // Make requests from each session
     let req = JsonRpcRequest::new(RequestId::Number(1), "tools/list".to_string(), None);
 
-    let resp1 = router.route(req.clone()).await;
-    let resp2 = router.route(req.clone()).await;
-    let resp3 = router.route(req.clone()).await;
+    let resp1 = router.route(req.clone(), None).await;
+    let resp2 = router.route(req.clone(), None).await;
+    let resp3 = router.route(req.clone(), None).await;
 
     // All should succeed
     assert!(resp1.result.is_some());

@@ -203,6 +203,20 @@ impl Session {
     pub fn get_chunks(&self, request_id: &str) -> Option<&Vec<scp_filter::chunker::Chunk>> {
         self.chunk_cache.get(request_id)
     }
+
+    /// Extract keywords from tool call arguments and feed into the accumulator.
+    ///
+    /// Call this before making the backend request so terms are ready for relevance scoring.
+    /// Also applies exponential decay so older terms lose relevance over time.
+    pub fn feed_tool_args(&mut self, args: &serde_json::Value) {
+        self.keyword_accumulator.decay();
+        self.keyword_accumulator.extract_from_args(args);
+    }
+
+    /// Get top-k query terms for relevance scoring.
+    pub fn current_query_terms(&self, k: usize) -> Vec<String> {
+        self.keyword_accumulator.top_k(k)
+    }
 }
 
 /// Session summary for listing.

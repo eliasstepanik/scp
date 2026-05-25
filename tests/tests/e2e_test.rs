@@ -1,5 +1,6 @@
 use scp_core::config::FilterConfig;
 use scp_core::protocol::{JsonRpcRequest, RequestId};
+use scp_filter::pipeline::FilterPipeline;
 use scp_hub::router::Router;
 use scp_hub::session_store::SessionStore;
 use scp_index::ToolRegistry;
@@ -7,6 +8,10 @@ use scp_pool::PoolManager;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+fn make_filter_pipeline() -> Arc<FilterPipeline> {
+    Arc::new(FilterPipeline::new(&FilterConfig::default()))
+}
 
 // ============================================================================
 // Test 1: test_full_hub_lifecycle
@@ -27,6 +32,7 @@ async fn test_full_hub_lifecycle() {
         tool_registry.clone(),
         300,  // fanout_timeout_secs
         4000, // request_token_budget
+        make_filter_pipeline(),
     ));
 
     // Create a session
@@ -52,7 +58,7 @@ async fn test_full_hub_lifecycle() {
         })),
     );
 
-    let init_resp = router.route(init_req).await;
+    let init_resp = router.route(init_req, None).await;
     assert!(
         init_resp.result.is_some(),
         "Initialize should return a result"
@@ -60,7 +66,7 @@ async fn test_full_hub_lifecycle() {
 
     // Test tools/list request
     let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
-    let list_resp = router.route(list_req).await;
+    let list_resp = router.route(list_req, None).await;
 
     assert!(
         list_resp.result.is_some(),
@@ -131,6 +137,7 @@ async fn test_tool_call_proxied_through_filter() {
         tool_registry.clone(),
         4000,
         300,
+        make_filter_pipeline(),
     ));
 
     // Create a session with a known budget
@@ -158,7 +165,7 @@ async fn test_tool_call_proxied_through_filter() {
         })),
     );
 
-    let call_resp = router.route(call_req).await;
+    let call_resp = router.route(call_req, None).await;
 
     // Verify we got a response (either result or error)
     assert!(

@@ -389,7 +389,7 @@ async fn handle_post_mcp_inner(
     };
 
     // Route message to backend via Router
-    let response = state.router.route(request).await;
+    let response = state.router.route(request, Some(session.clone())).await;
 
     // Push response to session's outbound channel
     if let Some(session) = state.session_store.get(&session_id).await {
@@ -637,7 +637,7 @@ pub async fn run_stdio_client(session_store: Arc<SessionStore>, router: Arc<Rout
                         debug!("Received request from stdio: {}", request.method);
 
                         // Route message via Router
-                        let response = router.route(request).await;
+                        let response = router.route(request, None).await;
 
                         // Write response to stdout
                         if let Ok(json_str) = serde_json::to_string(&response) {
@@ -702,7 +702,10 @@ mod tests {
         let store = Arc::new(SessionStore::new(1000));
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(tokio::sync::RwLock::new(ToolRegistry::new()));
-        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000));
+        let filter_pipeline = Arc::new(scp_filter::pipeline::FilterPipeline::new(
+            &scp_core::config::FilterConfig::default(),
+        ));
+        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000, filter_pipeline));
         ListenerState {
             session_store: store,
             router,
@@ -716,7 +719,10 @@ mod tests {
         let store = Arc::new(SessionStore::new(1000));
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(tokio::sync::RwLock::new(ToolRegistry::new()));
-        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000));
+        let filter_pipeline = Arc::new(scp_filter::pipeline::FilterPipeline::new(
+            &scp_core::config::FilterConfig::default(),
+        ));
+        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000, filter_pipeline));
         let listener = ClientListener::new(addr, store, router, None);
         assert_eq!(listener.addr, addr);
     }

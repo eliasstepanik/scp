@@ -55,3 +55,7 @@ path = "tests/sse_integration_test.rs"
 [[test]]
 name = "stdio_integration_test"
 path = "tests/stdio_integration_test.rs"
+
+[[test]]
+name = "filter_e2e_test"
+path = "tests/filter_e2e_test.rs"
