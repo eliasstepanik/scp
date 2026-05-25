@@ -354,7 +354,7 @@ impl Router {
                     backend_tools.push((server_name, display_prefix, tools_array, entries));
                 }
                 Err(e) => {
-                    warn!("Backend {} tools/list error: {}", server_name, e)
+                    warn!("Backend {} tools/list error: {:#}", server_name, e)
                 }
             }
         }

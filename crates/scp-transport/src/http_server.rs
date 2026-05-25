@@ -102,7 +102,7 @@ impl HttpServerTransport {
             .body(json_str)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -209,7 +209,7 @@ impl HttpServerTransport {
             .body(json_str)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
 
         // Capture session ID from response if not yet set.
         if self.session_id.is_none() {
@@ -328,7 +328,7 @@ impl HttpServerTransport {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -392,7 +392,7 @@ impl HttpServerTransport {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
 
         let status = response.status();
         if !status.is_success() {
