@@ -854,17 +854,14 @@ impl Router {
                 };
             }
             "scp_search" => {
-                let query = request
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("query"))
+                let args = request.params.as_ref().and_then(|p| p.get("arguments"));
+                let query = args
+                    .and_then(|a| a.get("query"))
                     .and_then(|q| q.as_str())
                     .unwrap_or("")
                     .to_string();
-                let limit = request
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("limit"))
+                let limit = args
+                    .and_then(|a| a.get("limit"))
                     .and_then(|l| l.as_u64())
                     .unwrap_or(10) as usize;
 
@@ -1656,8 +1653,10 @@ mod tests {
             method: "tools/call".to_string(),
             params: Some(json!({
                 "name": "scp_search",
-                "query": "schema",
-                "limit": 5
+                "arguments": {
+                    "query": "schema",
+                    "limit": 5
+                }
             })),
         };
 
@@ -1702,8 +1701,10 @@ mod tests {
             method: "tools/call".to_string(),
             params: Some(json!({
                 "name": "scp_search",
-                "query": "schema",
-                "limit": 5
+                "arguments": {
+                    "query": "schema",
+                    "limit": 5
+                }
             })),
         };
 
