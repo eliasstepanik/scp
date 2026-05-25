@@ -5,10 +5,11 @@ use scp_core::config::ServerConfig;
 use scp_transport::stdio_server::StdioServerTransport;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Pool manager error types
 #[derive(Debug, Error)]
@@ -162,20 +163,130 @@ impl PoolManager {
                         .set(1.0);
 
                     let pool = Arc::new(SharedPool::new(transport));
-                    let pool_for_loop = pool.clone();
-                    let name_for_loop = name.to_string();
 
-                    let receive_handle = tokio::spawn(async move {
-                        if let Err(e) = pool_for_loop.receive_loop(&name_for_loop).await {
-                            error!("receive_loop exited: {}", e);
-                        }
-                    });
-
-                    // Store pool and handle under write lock
+                    // Store pool under write lock before spawning the recovery loop
                     {
                         let mut servers = self.servers.write().await;
                         if let Some(entry) = servers.get_mut(name) {
-                            entry.pool = Some(pool);
+                            entry.pool = Some(pool.clone());
+                        }
+                    }
+
+                    let name_for_loop = name.to_string();
+                    let servers_for_loop = self.servers.clone();
+
+                    // Clones needed to re-spawn inside the recovery loop
+                    let command_for_loop = command.to_string();
+                    let args_for_loop = args.clone();
+                    let env_for_loop = env.clone();
+                    let state_for_loop = state_arc.clone();
+
+                    let receive_handle = tokio::spawn(async move {
+                        const MAX_RETRIES: u32 = 5;
+                        let mut current_pool = pool;
+
+                        loop {
+                            // Run receive loop until it exits
+                            if let Err(e) = current_pool.receive_loop(&name_for_loop).await {
+                                error!("receive_loop for '{}' exited: {}", name_for_loop, e);
+                            }
+
+                            // Check if the server has been administratively disabled/removed
+                            {
+                                let servers = servers_for_loop.read().await;
+                                if let Some(entry) = servers.get(&name_for_loop) {
+                                    let state = entry.state.read().await;
+                                    if matches!(
+                                        state.state,
+                                        ServerState::Disabled | ServerState::Draining
+                                    ) {
+                                        // Intentional stop — do not retry
+                                        break;
+                                    }
+                                } else {
+                                    // Server was removed
+                                    break;
+                                }
+                            }
+
+                            // Attempt crash recovery with exponential backoff
+                            let mut restarted = false;
+                            for attempt in 1..=MAX_RETRIES {
+                                let backoff = Duration::from_secs(1u64 << (attempt - 1)); // 1,2,4,8,16
+                                warn!(
+                                    "Server '{}' crashed; retry {}/{} in {:?}",
+                                    name_for_loop, attempt, MAX_RETRIES, backoff
+                                );
+                                tokio::time::sleep(backoff).await;
+
+                                let args_ref: Vec<&str> =
+                                    args_for_loop.iter().map(|s| s.as_str()).collect();
+
+                                match StdioServerTransport::spawn(
+                                    &command_for_loop,
+                                    &args_ref,
+                                    &env_for_loop,
+                                )
+                                .await
+                                {
+                                    Ok(new_transport) => {
+                                        SCP_POOL_SPAWNS_TOTAL
+                                            .with_label_values(&[&name_for_loop])
+                                            .inc();
+                                        SCP_POOL_ACTIVE_PROCESSES
+                                            .with_label_values(&[&name_for_loop])
+                                            .set(1.0);
+
+                                        let new_pool = Arc::new(SharedPool::new(new_transport));
+
+                                        // Update entry with fresh pool
+                                        {
+                                            let mut servers = servers_for_loop.write().await;
+                                            if let Some(entry) = servers.get_mut(&name_for_loop) {
+                                                entry.pool = Some(new_pool.clone());
+                                            }
+                                        }
+
+                                        // Restore Warm state
+                                        {
+                                            let mut state = state_for_loop.write().await;
+                                            state.transition_to(ServerState::Warm);
+                                        }
+
+                                        info!(
+                                            "Server '{}' restarted after crash (attempt {})",
+                                            name_for_loop, attempt
+                                        );
+
+                                        current_pool = new_pool;
+                                        restarted = true;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to respawn '{}' (attempt {}): {}",
+                                            name_for_loop, attempt, e
+                                        );
+                                    }
+                                }
+                            }
+
+                            if !restarted {
+                                error!(
+                                    "Server '{}' failed to restart after {} attempts; disabling",
+                                    name_for_loop, MAX_RETRIES
+                                );
+                                let mut state = state_for_loop.write().await;
+                                state.transition_to(ServerState::Disabled);
+                                break;
+                            }
+                        }
+                    });
+
+                    // Store handle under write lock
+                    {
+                        let mut servers = self.servers.write().await;
+                        if let Some(entry) = servers.get_mut(name) {
                             entry.health_check_handle = Some(receive_handle);
                         }
                     }
