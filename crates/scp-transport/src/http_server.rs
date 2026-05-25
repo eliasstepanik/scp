@@ -358,8 +358,11 @@ mod tests {
     #[test]
     fn test_http_server_transport_url_normalization() {
         // When config already includes /mcp, it must not be doubled
-        let transport =
-            HttpServerTransport::new("http://task-mcp:8081/mcp".to_string(), HashMap::new(), false);
+        let transport = HttpServerTransport::new(
+            "http://task-mcp:8081/mcp".to_string(),
+            HashMap::new(),
+            false,
+        );
         assert_eq!(transport.url, "http://task-mcp:8081/mcp");
 
         // Base URL without /mcp also works

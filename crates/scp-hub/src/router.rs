@@ -224,10 +224,7 @@ impl Router {
         let prefix_map: std::collections::HashMap<String, String> = server_configs
             .iter()
             .map(|(sn, cfg, _)| {
-                let prefix = cfg
-                    .name_prefix
-                    .clone()
-                    .unwrap_or_else(|| sn.clone());
+                let prefix = cfg.name_prefix.clone().unwrap_or_else(|| sn.clone());
                 (sn.clone(), prefix)
             })
             .collect();
