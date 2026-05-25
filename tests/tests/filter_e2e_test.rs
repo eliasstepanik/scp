@@ -67,9 +67,7 @@ async fn test_scp_get_more_returns_stored_chunks() {
         })),
     );
 
-    let resp = router
-        .route(get_more_req, Some(session_arc.clone()))
-        .await;
+    let resp = router.route(get_more_req, Some(session_arc.clone())).await;
 
     assert!(
         resp.result.is_some(),
@@ -87,8 +85,7 @@ async fn test_scp_get_more_returns_stored_chunks() {
         .and_then(|t| t.as_str())
         .expect("Response should contain content[0].text");
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(text).expect("text should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(text).expect("text should be valid JSON");
 
     let items = parsed
         .get("items")
@@ -111,7 +108,10 @@ async fn test_scp_get_more_returns_stored_chunks() {
         .get("has_more")
         .and_then(|v| v.as_bool())
         .expect("Response should contain has_more");
-    assert!(!has_more, "has_more should be false for 1 item with limit 10");
+    assert!(
+        !has_more,
+        "has_more should be false for 1 item with limit 10"
+    );
 
     // -----------------------------------------------------------------------
     // Now test unknown request_id → total: 0, empty items, no error
@@ -129,9 +129,7 @@ async fn test_scp_get_more_returns_stored_chunks() {
         })),
     );
 
-    let unknown_resp = router
-        .route(unknown_req, Some(session_arc.clone()))
-        .await;
+    let unknown_resp = router.route(unknown_req, Some(session_arc.clone())).await;
 
     assert!(
         unknown_resp.result.is_some(),
@@ -236,7 +234,10 @@ async fn test_pipeline_dropped_chunks_land_in_session() {
     let dropped_count = filter_result.dropped_chunks.len();
     {
         let mut s = session_arc.lock().unwrap();
-        s.store_chunks("test-req-pipeline-1".to_string(), filter_result.dropped_chunks);
+        s.store_chunks(
+            "test-req-pipeline-1".to_string(),
+            filter_result.dropped_chunks,
+        );
     }
 
     // Retrieve and assert
@@ -254,10 +255,7 @@ async fn test_pipeline_dropped_chunks_land_in_session() {
 
         // Every retrieved chunk should have non-empty text
         for chunk in retrieved {
-            assert!(
-                !chunk.text.is_empty(),
-                "Chunk text should not be empty"
-            );
+            assert!(!chunk.text.is_empty(), "Chunk text should not be empty");
         }
     }
 

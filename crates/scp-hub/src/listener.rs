@@ -705,7 +705,13 @@ mod tests {
         let filter_pipeline = Arc::new(scp_filter::pipeline::FilterPipeline::new(
             &scp_core::config::FilterConfig::default(),
         ));
-        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000, filter_pipeline));
+        let router = Arc::new(Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            filter_pipeline,
+        ));
         ListenerState {
             session_store: store,
             router,
@@ -722,7 +728,13 @@ mod tests {
         let filter_pipeline = Arc::new(scp_filter::pipeline::FilterPipeline::new(
             &scp_core::config::FilterConfig::default(),
         ));
-        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000, filter_pipeline));
+        let router = Arc::new(Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            filter_pipeline,
+        ));
         let listener = ClientListener::new(addr, store, router, None);
         assert_eq!(listener.addr, addr);
     }

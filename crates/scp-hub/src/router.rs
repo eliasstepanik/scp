@@ -391,22 +391,21 @@ impl Router {
         }
 
         // Extract session state (hold lock briefly to avoid holding across await)
-        let (delivery_log, query_terms, budget, session_id_str) =
-            if let Some(sess) = &session {
-                let s = sess.lock().unwrap_or_else(|e| e.into_inner());
-                let terms = s.current_query_terms(20);
-                let budget = s.token_budget_remaining;
-                let sid = s.id.clone();
-                let log = s.delivery_log.clone();
-                (log, terms, budget, sid)
-            } else {
-                (
-                    Arc::new(Mutex::new(DeliveryLog::new(1000))),
-                    vec![],
-                    self.request_token_budget,
-                    "anonymous".to_string(),
-                )
-            };
+        let (delivery_log, query_terms, budget, session_id_str) = if let Some(sess) = &session {
+            let s = sess.lock().unwrap_or_else(|e| e.into_inner());
+            let terms = s.current_query_terms(20);
+            let budget = s.token_budget_remaining;
+            let sid = s.id.clone();
+            let log = s.delivery_log.clone();
+            (log, terms, budget, sid)
+        } else {
+            (
+                Arc::new(Mutex::new(DeliveryLog::new(1000))),
+                vec![],
+                self.request_token_budget,
+                "anonymous".to_string(),
+            )
+        };
 
         // If tool_name is slash-qualified (e.g. "memory-global/search_memory"), route directly
         // to the named server without a registry lookup.
@@ -448,8 +447,7 @@ impl Router {
                         short_circuit_below_tokens: self.filter_pipeline.short_circuit_below_tokens,
                         request_id: request_id.clone(),
                     };
-                    let filter_result =
-                        self.filter_pipeline.run(&content_value, &filter_ctx).await;
+                    let filter_result = self.filter_pipeline.run(&content_value, &filter_ctx).await;
 
                     if !filter_result.dropped_chunks.is_empty() {
                         info!(
@@ -556,7 +554,7 @@ impl Router {
                     .params
                     .as_ref()
                     .and_then(|p| p.get("arguments"))
-                    .or_else(|| request.params.as_ref());
+                    .or(request.params.as_ref());
                 let request_id = args
                     .and_then(|p| p.get("request_id"))
                     .and_then(|v| v.as_str())
