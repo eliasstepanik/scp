@@ -2,10 +2,9 @@ use scp_core::protocol::{IncomingMessage, JsonRpcRequest, JsonRpcResponse, Reque
 use scp_transport::stdio_server::StdioServerTransport;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, OnceCell};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -32,8 +31,7 @@ pub enum PoolError {
 pub struct SharedPool {
     transport: Arc<Mutex<StdioServerTransport>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
-    initialized: Arc<AtomicBool>,
-    init_mutex: Arc<Mutex<()>>,
+    initialized: OnceCell<()>,
 }
 
 impl SharedPool {
@@ -42,75 +40,65 @@ impl SharedPool {
         Self {
             transport: Arc::new(Mutex::new(transport)),
             pending: Arc::new(Mutex::new(HashMap::new())),
-            initialized: Arc::new(AtomicBool::new(false)),
-            init_mutex: Arc::new(Mutex::new(())),
+            initialized: OnceCell::new(),
         }
     }
 
-    /// Ensure the MCP session is initialized (idempotent)
+    /// Ensure the MCP session is initialized (idempotent, race-free)
     async fn ensure_initialized(&self) -> Result<(), PoolError> {
-        if self.initialized.load(Ordering::Acquire) {
-            return Ok(());
-        }
+        self.initialized
+            .get_or_try_init(|| async {
+                // Send initialize request
+                let init_id = format!("scp-init-{}", Uuid::new_v4());
+                let init_req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": init_id,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": { "name": "scp", "version": "0.2.0" }
+                    }
+                });
 
-        // Serialize concurrent callers so only one does the handshake
-        let _guard = self.init_mutex.lock().await;
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending = self.pending.lock().await;
+                    pending.insert(init_id.clone(), tx);
+                }
 
-        // Re-check after acquiring the lock
-        if self.initialized.load(Ordering::Acquire) {
-            return Ok(());
-        }
+                {
+                    let transport = self.transport.lock().await;
+                    transport
+                        .send(&init_req)
+                        .await
+                        .map_err(|e| PoolError::TransportError(e.to_string()))?;
+                }
 
-        // Send initialize request
-        let init_id = format!("scp-init-{}", Uuid::new_v4());
-        let init_req = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": init_id,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": { "name": "scp", "version": "0.2.0" }
-            }
-        });
+                // Wait for initialize response
+                tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+                    .await
+                    .map_err(|_| PoolError::Timeout)?
+                    .map_err(|_| PoolError::Cancelled)?;
 
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending.lock().await;
-            pending.insert(init_id.clone(), tx);
-        }
+                // Send initialized notification (no response expected)
+                let notif = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized"
+                });
+                {
+                    let transport = self.transport.lock().await;
+                    transport
+                        .send(&notif)
+                        .await
+                        .map_err(|e| PoolError::TransportError(e.to_string()))?;
+                }
 
-        {
-            let transport = self.transport.lock().await;
-            transport
-                .send(&init_req)
-                .await
-                .map_err(|e| PoolError::TransportError(e.to_string()))?;
-        }
-
-        // Wait for initialize response
-        tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+                debug!("MCP session initialized");
+                Ok(())
+            })
             .await
-            .map_err(|_| PoolError::Timeout)?
-            .map_err(|_| PoolError::Cancelled)?;
-
-        // Send initialized notification (no response expected)
-        let notif = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized"
-        });
-        {
-            let transport = self.transport.lock().await;
-            transport
-                .send(&notif)
-                .await
-                .map_err(|e| PoolError::TransportError(e.to_string()))?;
-        }
-
-        self.initialized.store(true, Ordering::Release);
-        debug!("MCP session initialized");
-
-        Ok(())
+            .map(|_| ())
     }
 
     /// Send a method call and return the result Value
