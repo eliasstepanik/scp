@@ -105,8 +105,53 @@ impl HttpServerTransport {
         Ok(())
     }
 
-    /// Send a JSON-RPC request and return the parsed JSON response body.
-    pub async fn send_request(&mut self, msg: &Value) -> Result<Value, TransportError> {
+    /// Perform the MCP initialize handshake and store the session ID.
+    ///
+    /// Called automatically by `send_request` when `session_id` is `None`.
+    /// Safe to call multiple times — a no-op when the session is already set.
+    async fn ensure_session(&mut self) -> Result<(), TransportError> {
+        if self.session_id.is_some() {
+            return Ok(());
+        }
+
+        let init_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "scp-init-0001",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "scp", "version": "0.2.0" }
+            }
+        });
+
+        // Send initialize and capture the Mcp-Session-Id from the response headers.
+        let init_body = self.post_raw(&init_req).await?;
+
+        // Expect a valid JSON-RPC result back (ignore the capabilities for now).
+        if let Some(err) = init_body.get("error") {
+            return Err(TransportError::ProcessError(format!(
+                "initialize error: {}",
+                err
+            )));
+        }
+
+        // Send notifications/initialized — no response expected.
+        let notif = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        });
+        // Best-effort; ignore errors (some servers don't require it).
+        let _ = self.post_raw(&notif).await;
+
+        debug!("HTTP session initialized: {:?}", self.session_id);
+        Ok(())
+    }
+
+    /// Low-level POST helper: builds headers (including session ID if set),
+    /// sends the request, captures `Mcp-Session-Id` from the response, and
+    /// returns the parsed JSON body.  Does NOT call `ensure_session`.
+    async fn post_raw(&mut self, msg: &Value) -> Result<Value, TransportError> {
         let json_str = serde_json::to_string(msg)
             .map_err(|e| TransportError::InvalidMessage(e.to_string()))?;
 
@@ -124,8 +169,6 @@ impl HttpServerTransport {
             })?,
         );
 
-        // Add custom headers — use entry().or_insert() so that config headers
-        // cannot overwrite required headers already set above (e.g. Accept).
         for (key, value) in &self.headers {
             if let (Ok(name), Ok(val)) = (
                 reqwest::header::HeaderName::from_bytes(key.as_bytes()),
@@ -135,7 +178,6 @@ impl HttpServerTransport {
             }
         }
 
-        // Add session ID header if set
         if let Some(session_id) = &self.session_id {
             if let Ok(val) = reqwest::header::HeaderValue::from_str(session_id) {
                 req_headers.insert(
@@ -158,7 +200,7 @@ impl HttpServerTransport {
             .await
             .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {}", e)))?;
 
-        // Capture session ID from response if not yet set
+        // Capture session ID from response if not yet set.
         if self.session_id.is_none() {
             if let Some(sid) = response.headers().get("Mcp-Session-Id") {
                 if let Ok(s) = sid.to_str() {
@@ -169,15 +211,17 @@ impl HttpServerTransport {
 
         let status = response.status();
         if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
             return Err(TransportError::ProcessError(format!(
                 "HTTP {}: {}",
                 status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown")
+                body
             )));
         }
 
-        // Backends may respond with either plain JSON or SSE (text/event-stream).
-        // Detect the content-type and extract the JSON accordingly.
         let is_sse = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -189,7 +233,6 @@ impl HttpServerTransport {
             let text = response.text().await.map_err(|e| {
                 TransportError::ProcessError(format!("Failed to read SSE response: {}", e))
             })?;
-            // Extract the first `data:` line from the SSE stream
             let json_str = text
                 .lines()
                 .find_map(|line| line.strip_prefix("data:"))
@@ -207,6 +250,18 @@ impl HttpServerTransport {
             })?;
             Ok(body)
         }
+    }
+
+    /// Send a JSON-RPC request and return the parsed JSON response body.
+    ///
+    /// Automatically performs the MCP `initialize` handshake on the first call
+    /// if the session has not yet been established (i.e. `session_id` is `None`).
+    /// Servers that require `Mcp-Session-Id` on every request (e.g. Portainer MCP)
+    /// will then receive the correct header on `tools/list` and subsequent calls.
+    pub async fn send_request(&mut self, msg: &Value) -> Result<Value, TransportError> {
+        // Ensure the MCP session is initialized before sending any method call.
+        self.ensure_session().await?;
+        self.post_raw(msg).await
     }
 
     /// Receive JSON-RPC messages from the backend via GET /mcp SSE stream
