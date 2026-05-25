@@ -8,6 +8,24 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+/// Kill all processes matching the given executable name (best-effort, ignores errors).
+/// On Windows this uses `taskkill /F /IM <name>` to forcibly terminate all instances.
+fn kill_processes_by_name(exe_name: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", exe_name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    #[cfg(not(target_os = "windows"))]
+    let _ = Command::new("pkill")
+        .arg("-f")
+        .arg(exe_name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// Mock MCP server for testing
 pub struct MockMcpServer {
     process: Child,
@@ -264,9 +282,15 @@ backoff_factor = 2.0
         format!("Bearer {}", self.auth_token)
     }
 
-    /// Kill the hub process
+    /// Kill the hub process and any orphaned mock-mcp-server children.
+    /// Also waits briefly so Windows releases file handles before the next test rebuilds.
     pub fn kill(&mut self) -> Result<()> {
-        self.process.kill()?;
+        let _ = self.process.kill();
+        // Kill orphaned stdio children spawned by the hub (Windows keeps them alive
+        // after the parent is killed, which locks the exe and breaks the next build).
+        kill_processes_by_name("mock-mcp-server.exe");
+        // Give Windows a moment to release file handles.
+        thread::sleep(Duration::from_millis(300));
         Ok(())
     }
 }

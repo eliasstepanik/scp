@@ -3,12 +3,19 @@ use scp_tests::HttpTestHub;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
+fn test_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("Failed to build reqwest client")
+}
+
 /// Test that hub starts and serves HTTP
 #[tokio::test]
 async fn test_hub_starts_and_serves_http() {
     let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
 
-    let client = reqwest::Client::new();
+    let client = test_client();
 
     // Poll the health endpoint until ready (max 5s)
     let start = Instant::now();
@@ -41,7 +48,7 @@ async fn test_hub_starts_and_serves_http() {
 async fn test_hub_mcp_initialize() {
     let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
 
-    let client = reqwest::Client::new();
+    let client = test_client();
 
     let init_req = JsonRpcRequest::new(
         RequestId::Number(1),
@@ -86,7 +93,7 @@ async fn test_hub_mcp_initialize() {
 async fn test_hub_mcp_tools_list() {
     let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
 
-    let client = reqwest::Client::new();
+    let client = test_client();
 
     // Initialize first
     let init_req = JsonRpcRequest::new(
@@ -165,7 +172,7 @@ async fn test_hub_mcp_tools_list() {
 async fn test_hub_extension_tool_scp_info() {
     let mut hub = HttpTestHub::spawn_auto().expect("Failed to spawn hub");
 
-    let client = reqwest::Client::new();
+    let client = test_client();
 
     // Initialize first
     let init_req = JsonRpcRequest::new(

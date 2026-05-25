@@ -228,24 +228,25 @@ impl Router {
                 let pool_manager_clone = self.pool_manager.clone();
                 let sn = server_name.clone();
                 handles.push(tokio::spawn(async move {
-                    match pool_manager_clone.get_pool(&sn).await {
-                        Ok(pool) => {
-                            match tokio::time::timeout(
-                                std::time::Duration::from_secs(fanout_timeout.min(5)),
-                                pool.call("tools/list", None),
-                            )
+                    let deadline = std::time::Duration::from_secs(fanout_timeout.min(5));
+                    match tokio::time::timeout(deadline, async {
+                        let pool = pool_manager_clone
+                            .get_pool(&sn)
                             .await
-                            {
-                                Ok(Ok(value)) => {
-                                    // Wrap in a pseudo-HTTP response envelope so the
-                                    // existing result-extraction logic works unchanged.
-                                    (sn, Ok(json!({ "result": value })))
-                                }
-                                Ok(Err(e)) => (sn, Err(e.to_string())),
-                                Err(_) => (sn, Err("timeout".to_string())),
-                            }
+                            .map_err(|e| e.to_string())?;
+                        pool.call("tools/list", None)
+                            .await
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+                    {
+                        Ok(Ok(value)) => {
+                            // Wrap in a pseudo-HTTP response envelope so the
+                            // existing result-extraction logic works unchanged.
+                            (sn, Ok(json!({ "result": value })))
                         }
-                        Err(e) => (sn, Err(e.to_string())),
+                        Ok(Err(e)) => (sn, Err(e)),
+                        Err(_) => (sn, Err("timeout".to_string())),
                     }
                 }));
             } else {
@@ -666,22 +667,27 @@ impl Router {
 
             Ok(self.maybe_truncate_response(response))
         } else if config.command.is_some() {
-            // stdio backend — use shared pool
-            let pool = self
-                .pool_manager
-                .get_pool(server_name)
-                .await
-                .map_err(|e| RouterError::PoolError(e.to_string()))?;
-
+            // stdio backend — use shared pool; wrap get_pool + call in a single timeout
+            // so initialization latency (ensure_initialized 30s window) cannot exceed
+            // the configured fanout limit.
+            let pool_manager = self.pool_manager.clone();
+            let sn = server_name.to_string();
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(self.fanout_timeout_secs),
-                pool.call(method, params),
+                async move {
+                    let pool = pool_manager
+                        .get_pool(&sn)
+                        .await
+                        .map_err(|e| RouterError::PoolError(e.to_string()))?;
+                    pool.call(method, params)
+                        .await
+                        .map_err(|e| RouterError::PoolError(e.to_string()))
+                },
             )
             .await
             .map_err(|_| {
                 RouterError::PoolError(format!("Timeout calling backend {}", server_name))
-            })?
-            .map_err(|e| RouterError::PoolError(e.to_string()))?;
+            })??;
 
             // Wrap result to match HTTP response shape expected by callers
             Ok(self.maybe_truncate_response(json!({ "result": result })))
