@@ -1,4 +1,5 @@
 use crate::lifecycle::{LifecycleInfo, ServerState};
+use crate::metrics::{SCP_POOL_ACTIVE_PROCESSES, SCP_POOL_SPAWNS_TOTAL};
 use crate::shared::SharedPool;
 use scp_core::config::ServerConfig;
 use scp_transport::stdio_server::StdioServerTransport;
@@ -155,11 +156,17 @@ impl PoolManager {
 
             match StdioServerTransport::spawn(command, &args_ref, &env).await {
                 Ok(transport) => {
+                    SCP_POOL_SPAWNS_TOTAL.with_label_values(&[name]).inc();
+                    SCP_POOL_ACTIVE_PROCESSES
+                        .with_label_values(&[name])
+                        .set(1.0);
+
                     let pool = Arc::new(SharedPool::new(transport));
                     let pool_for_loop = pool.clone();
+                    let name_for_loop = name.to_string();
 
                     let receive_handle = tokio::spawn(async move {
-                        if let Err(e) = pool_for_loop.receive_loop().await {
+                        if let Err(e) = pool_for_loop.receive_loop(&name_for_loop).await {
                             error!("receive_loop exited: {}", e);
                         }
                     });

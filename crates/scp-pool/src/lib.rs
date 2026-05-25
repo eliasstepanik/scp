@@ -1,6 +1,7 @@
 pub mod circuit_breaker;
 pub mod lifecycle;
 pub mod manager;
+pub mod metrics;
 pub mod shared;
 
 pub use circuit_breaker::{CircuitBreaker, CircuitState};

@@ -1,3 +1,4 @@
+use crate::metrics::{SCP_POOL_ACTIVE_PROCESSES, SCP_POOL_CRASHES_TOTAL};
 use scp_core::protocol::{IncomingMessage, JsonRpcRequest, JsonRpcResponse, RequestId};
 use scp_transport::stdio_server::StdioServerTransport;
 use serde_json::Value;
@@ -194,15 +195,24 @@ impl SharedPool {
         Ok(mapped_response)
     }
 
-    /// Receive responses from the transport and dispatch to pending requests
-    pub async fn receive_loop(&self) -> Result<(), PoolError> {
+    /// Receive responses from the transport and dispatch to pending requests.
+    /// `server_name` is used to label Prometheus metrics on error exit.
+    pub async fn receive_loop(&self, server_name: &str) -> Result<(), PoolError> {
         loop {
             let msg = {
                 let mut transport = self.transport.lock().await;
-                transport
-                    .receive()
-                    .await
-                    .map_err(|e| PoolError::TransportError(e.to_string()))?
+                match transport.receive().await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        SCP_POOL_CRASHES_TOTAL
+                            .with_label_values(&[server_name])
+                            .inc();
+                        SCP_POOL_ACTIVE_PROCESSES
+                            .with_label_values(&[server_name])
+                            .set(0.0);
+                        return Err(PoolError::TransportError(e.to_string()));
+                    }
+                }
             };
 
             match msg {
@@ -225,7 +235,13 @@ impl SharedPool {
                     // Unexpected server-initiated request — ignore
                 }
                 None => {
-                    // Transport closed
+                    // Transport closed — record crash and mark process inactive
+                    SCP_POOL_CRASHES_TOTAL
+                        .with_label_values(&[server_name])
+                        .inc();
+                    SCP_POOL_ACTIVE_PROCESSES
+                        .with_label_values(&[server_name])
+                        .set(0.0);
                     return Err(PoolError::TransportError("Transport closed".to_string()));
                 }
             }

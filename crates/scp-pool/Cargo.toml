@@ -10,5 +10,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+prometheus = { workspace = true }
+once_cell = { workspace = true }
 scp-core = { path = "../scp-core" }
 scp-transport = { path = "../scp-transport" }
