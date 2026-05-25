@@ -14,15 +14,16 @@ use std::time::Duration;
 /// Uses a raw TCP socket so no async runtime or blocking reqwest feature is needed.
 fn http_get_is_ok(host: &str, port: u16, path: &str) -> bool {
     let addr = format!("{}:{}", host, port);
-    let mut stream = match TcpStream::connect_timeout(
-        &addr.parse().unwrap(),
-        Duration::from_millis(500),
-    ) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
+    let mut stream =
+        match TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(500)) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let request = format!("GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n", path, host);
+    let request = format!(
+        "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        path, host
+    );
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
