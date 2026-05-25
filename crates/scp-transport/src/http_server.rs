@@ -268,18 +268,16 @@ impl HttpServerTransport {
                         buffer.push_str(&String::from_utf8_lossy(&chunk));
                         // Process all complete lines in the buffer.
                         while let Some(newline_pos) = buffer.find('\n') {
-                            let line =
-                                buffer[..newline_pos].trim_end_matches('\r').to_string();
+                            let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
                             buffer = buffer[newline_pos + 1..].to_string();
                             if let Some(data) = line.strip_prefix("data:") {
                                 let data = data.trim();
-                                let body: Value =
-                                    serde_json::from_str(data).map_err(|e| {
-                                        TransportError::ProcessError(format!(
-                                            "SSE data JSON parse error: {}",
-                                            e
-                                        ))
-                                    })?;
+                                let body: Value = serde_json::from_str(data).map_err(|e| {
+                                    TransportError::ProcessError(format!(
+                                        "SSE data JSON parse error: {}",
+                                        e
+                                    ))
+                                })?;
                                 return Ok(body);
                             }
                         }
