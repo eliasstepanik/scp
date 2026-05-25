@@ -2,11 +2,36 @@ use anyhow::Result;
 use scp_core::mcp_types::{CallToolResult, Implementation, InitializeResult, Tool, ToolContent};
 use scp_transport::stdio_client::StdioClientTransport;
 use serde_json::json;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
+
+/// Send a minimal HTTP GET to `host:port/path` and return true iff the response
+/// starts with `HTTP/1.1 200` (i.e. the server is up and the endpoint exists).
+/// Uses a raw TCP socket so no async runtime or blocking reqwest feature is needed.
+fn http_get_is_ok(host: &str, port: u16, path: &str) -> bool {
+    let addr = format!("{}:{}", host, port);
+    let mut stream = match TcpStream::connect_timeout(
+        &addr.parse().unwrap(),
+        Duration::from_millis(500),
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let request = format!("GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n", path, host);
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 15];
+    if stream.read_exact(&mut buf).is_err() {
+        return false;
+    }
+    buf.starts_with(b"HTTP/1.1 200") || buf.starts_with(b"HTTP/1.0 200")
+}
 
 /// Kill all processes matching the given executable name (best-effort, ignores errors).
 /// On Windows this uses `taskkill /F /IM <name>` to forcibly terminate all instances.
@@ -236,26 +261,39 @@ backoff_factor = 2.0
         // Initial sleep to allow hub and mock server to start
         thread::sleep(Duration::from_millis(2000));
 
-        // Poll for hub to be ready (health endpoint returns 200)
+        // Poll for hub to be ready: both the admin port AND the MCP /health endpoint
+        // must be responsive before the test proceeds. Checking only admin TCP is not
+        // sufficient because the admin listener can be ready before the axum HTTP
+        // listener on hub.port has finished binding and registering routes.
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(15);
 
+        // Step 1: wait for the admin TCP port to accept connections.
         loop {
             if start.elapsed() > timeout {
-                eprintln!("Timeout waiting for hub to be ready");
+                eprintln!("Timeout waiting for admin port to be ready");
                 break;
             }
 
             match std::net::TcpStream::connect(format!("127.0.0.1:{}", admin_port)) {
-                Ok(_) => {
-                    // Additional sleep to ensure servers are initialized
-                    thread::sleep(Duration::from_millis(1000));
-                    break;
-                }
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(100));
-                }
+                Ok(_) => break,
+                Err(_) => thread::sleep(Duration::from_millis(100)),
             }
+        }
+
+        // Step 2: wait for the MCP /health endpoint to return HTTP 200.
+        // This guarantees that axum has fully started and the /mcp route is registered.
+        // We use a raw TCP request to avoid needing the reqwest blocking feature.
+        loop {
+            if start.elapsed() > timeout {
+                eprintln!("Timeout waiting for MCP health endpoint to be ready");
+                break;
+            }
+
+            if http_get_is_ok("127.0.0.1", port, "/health") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
         }
 
         Ok(Self {
