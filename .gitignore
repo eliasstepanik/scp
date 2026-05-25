@@ -1,4 +1,5 @@
 .tokensave
+memory/
 target/
 tasks/
 mcp/ssh-server/node_modules/
