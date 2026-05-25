@@ -158,6 +158,25 @@ impl Router {
                     "properties": {}
                 }
             }),
+            json!({
+                "name": "scp_search",
+                "description": "Search available tools by keyword using TF-IDF scoring. Returns the most relevant tools for the given query, ranked by relevance score.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query to find relevant tools"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of results to return (default: 10)",
+                            "default": 10
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }),
         ];
 
         // Fan-out to all available backend servers in parallel
@@ -435,6 +454,50 @@ impl Router {
                                 "text": r#"{"items": [], "offset": 0, "limit": 0}"#
                             }
                         ]
+                    })),
+                    error: None,
+                };
+            }
+            "scp_search" => {
+                let query = request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("query"))
+                    .and_then(|q| q.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let limit = request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("limit"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(10) as usize;
+
+                let registry = self.tool_registry.read().await;
+                let results = registry.search_tools(&query);
+                let results: Vec<Value> = results
+                    .into_iter()
+                    .take(limit)
+                    .map(|(score, entry)| {
+                        json!({
+                            "name": entry.qualified_name,
+                            "score": score,
+                            "description": entry.description,
+                        })
+                    })
+                    .collect();
+
+                let text = serde_json::to_string(&json!({
+                    "query": query,
+                    "results": results,
+                }))
+                .unwrap_or_default();
+
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [{"type": "text", "text": text}]
                     })),
                     error: None,
                 };

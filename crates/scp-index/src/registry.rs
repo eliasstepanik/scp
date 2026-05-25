@@ -258,6 +258,37 @@ impl ToolRegistry {
         self.tools.values().collect()
     }
 
+    /// Search tools by query string using TF-IDF scoring.
+    ///
+    /// Tokenizes the query, scores every tool in the registry, and returns
+    /// all tools with a non-zero score sorted highest-first.  Tools with
+    /// no description and no matching tokens receive a score of `0.0` and
+    /// are excluded from the result.
+    pub fn search_tools(&self, query: &str) -> Vec<(f32, &ToolEntry)> {
+        use crate::tfidf::tokenize;
+
+        let terms = tokenize(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+
+        let mut scored: Vec<(f32, &ToolEntry)> = self
+            .tools
+            .values()
+            .filter_map(|entry| {
+                let score = self.tfidf.score(&entry.qualified_name, &terms);
+                if score > 0.0 {
+                    Some((score, entry))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        scored
+    }
+
     /// Get tool count
     pub fn tool_count(&self) -> usize {
         self.tools.len()

@@ -6,7 +6,6 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -87,10 +86,7 @@ async fn mcp_handler(
 }
 
 /// Bind to a free port, start the axum server in a background task,
-/// and return the bound port together with a shutdown sender.
-///
-/// The shutdown sender is stored in the returned `BackendHandle`; dropping
-/// it shuts the server down cleanly.
+/// and return a handle that shuts the server down when dropped.
 struct BackendHandle {
     pub port: u16,
     _shutdown: oneshot::Sender<()>,
@@ -111,10 +107,9 @@ impl BackendHandle {
 
         let (tx, rx) = oneshot::channel::<()>();
 
-        let std_listener = listener;
         tokio::spawn(async move {
             let tokio_listener =
-                tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
+                tokio::net::TcpListener::from_std(listener).expect("tokio listener");
             axum::serve(tokio_listener, app)
                 .with_graceful_shutdown(async {
                     let _ = rx.await;
@@ -134,7 +129,7 @@ impl BackendHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Hub helper (extended version of HttpTestHub with HTTP backend support)
+// Hub spawn helper
 // ---------------------------------------------------------------------------
 
 fn scp_hub_bin() -> PathBuf {
@@ -172,15 +167,15 @@ fn find_available_port() -> u16 {
     listener.local_addr().expect("addr").port()
 }
 
-/// Spawn scp-hub configured with both a stdio backend and a streamable_http backend.
-fn spawn_hub_with_http_backend(
+/// Build the TOML config string for a hub with a stdio backend + an HTTP backend.
+fn build_config(
     hub_port: u16,
     admin_port: u16,
     auth_token: &str,
     backend_port: u16,
     mock_server_path: &str,
-) -> anyhow::Result<(Child, tempfile::NamedTempFile)> {
-    let config_content = format!(
+) -> String {
+    format!(
         r#"config_version = 1
 
 [hub]
@@ -262,6 +257,26 @@ backoff_factor = 2.0
         admin_port = admin_port,
         mock_server_path = mock_server_path.replace('\\', "\\\\"),
         backend_port = backend_port,
+    )
+}
+
+/// Spawn scp-hub and wait (async) for it to be ready on `admin_port`.
+///
+/// Uses only async sleeps so the in-process axum backend stays responsive
+/// while the hub is starting up.
+async fn spawn_hub_with_http_backend(
+    hub_port: u16,
+    admin_port: u16,
+    auth_token: &str,
+    backend_port: u16,
+    mock_server_path: &str,
+) -> anyhow::Result<(Child, tempfile::NamedTempFile)> {
+    let config_content = build_config(
+        hub_port,
+        admin_port,
+        auth_token,
+        backend_port,
+        mock_server_path,
     );
 
     let mut config_file = tempfile::NamedTempFile::new()?;
@@ -269,6 +284,7 @@ backoff_factor = 2.0
     config_file.flush()?;
     let config_path = config_file.path().to_path_buf();
 
+    // Spawn the hub process (non-blocking OS call).
     let process = Command::new(scp_hub_bin())
         .arg("--config")
         .arg(&config_path)
@@ -279,19 +295,25 @@ backoff_factor = 2.0
         .stderr(Stdio::null())
         .spawn()?;
 
-    // Wait for hub to be ready.
-    thread::sleep(Duration::from_millis(2000));
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_secs(15);
+    // Give the process a moment to start, using async sleep so the tokio
+    // runtime stays free to serve the in-process axum backend.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Poll for admin port using async TCP connect.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        if start.elapsed() > timeout {
+        if tokio::time::Instant::now() >= deadline {
             break;
         }
-        if std::net::TcpStream::connect(format!("127.0.0.1:{}", admin_port)).is_ok() {
-            thread::sleep(Duration::from_millis(1000));
+        if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", admin_port))
+            .await
+            .is_ok()
+        {
+            // Extra settle time — still async.
+            tokio::time::sleep(Duration::from_millis(1000)).await;
             break;
         }
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     Ok((process, config_file))
@@ -315,6 +337,7 @@ async fn test_streamable_http_backend_registers_warm() {
 
     let (mut process, _config) =
         spawn_hub_with_http_backend(hub_port, admin_port, auth_token, backend.port, &mock_str)
+            .await
             .expect("Failed to spawn hub");
 
     let client = reqwest::Client::new();
@@ -347,16 +370,17 @@ async fn test_streamable_http_backend_registers_warm() {
         servers
     );
 
-    let status = http_backend
+    // The admin API serialises the field as `state`, not `status`.
+    let state = http_backend
         .unwrap()
-        .get("status")
+        .get("state")
         .and_then(|s| s.as_str())
         .unwrap_or("");
 
     assert_eq!(
-        status, "warm",
-        "http-backend should be warm, got: {}",
-        status
+        state, "warm",
+        "http-backend should be warm, got: {:?}",
+        state
     );
 
     process.kill().ok();
@@ -376,6 +400,7 @@ async fn test_streamable_http_backend_tools_appear_in_list() {
 
     let (mut process, _config) =
         spawn_hub_with_http_backend(hub_port, admin_port, auth_token, backend.port, &mock_str)
+            .await
             .expect("Failed to spawn hub");
 
     let client = reqwest::Client::new();
@@ -447,6 +472,7 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
 
     let (mut process, _config) =
         spawn_hub_with_http_backend(hub_port, admin_port, auth_token, backend.port, &mock_str)
+            .await
             .expect("Failed to spawn hub");
 
     let client = reqwest::Client::new();
@@ -471,7 +497,7 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
         .await
         .expect("initialize");
 
-    // Confirm test_tool is in list.
+    // Confirm test_tool appears in tools/list.
     let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
     let list_resp = client
         .post(&mcp_url)
@@ -481,18 +507,20 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
         .await
         .expect("tools/list");
     let list_body: Value = list_resp.json().await.expect("parse list");
-    let empty = vec![];
     let tool_names: Vec<&str> = list_body
         .get("result")
         .and_then(|r| r.get("tools"))
         .and_then(|t| t.as_array())
-        .unwrap_or(&empty)
-        .iter()
-        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
-        .collect();
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     assert!(
         tool_names.contains(&"test_tool"),
-        "test_tool not available; list: {:?}",
+        "test_tool not available for call; list: {:?}",
         tool_names
     );
 

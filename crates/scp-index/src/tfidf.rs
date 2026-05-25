@@ -140,10 +140,20 @@ impl TfIdfIndex {
 
         dot_product.clamp(0.0, 1.0)
     }
+
+    /// Score a raw query string against a tool entry using TF-IDF.
+    /// Tokenizes the query internally and delegates to `score`.
+    pub fn score_query(&self, qualified_name: &str, query: &str) -> f32 {
+        let terms = tokenize(query);
+        if terms.is_empty() {
+            return 0.0;
+        }
+        self.score(qualified_name, &terms)
+    }
 }
 
 /// Tokenize a description: lowercase, split on non-alnum, filter < 3 chars and stop words
-fn tokenize(text: &str) -> Vec<String> {
+pub fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|token| token.len() >= 3 && !STOP_WORDS.contains(token))
@@ -301,6 +311,81 @@ mod tests {
         // Query with terms not in any description
         let query = vec!["xyzabc".to_string(), "qwerty".to_string()];
         assert_eq!(index.score("server1.tool1", &query), 0.0);
+    }
+
+    #[test]
+    fn test_tfidf_ranking_prefers_exact_name_match() {
+        // Tool whose *description* contains the exact query term should score higher
+        // than a tool whose description only vaguely overlaps.
+        let tools = vec![
+            (
+                "server.read_file".to_string(),
+                Some("read file from the filesystem".to_string()),
+            ),
+            (
+                "server.web_search".to_string(),
+                Some("query the web for results".to_string()),
+            ),
+        ];
+
+        let index = TfIdfIndex::build(&tools);
+
+        // Query: "read file" — directly matches server.read_file description
+        let terms = vec!["read".to_string(), "file".to_string()];
+        let score_read = index.score("server.read_file", &terms);
+        let score_web = index.score("server.web_search", &terms);
+
+        assert!(
+            score_read > score_web,
+            "read_file should outscore web_search for query 'read file', got {} vs {}",
+            score_read,
+            score_web
+        );
+        assert!(score_read > 0.0, "read_file score should be positive");
+    }
+
+    #[test]
+    fn test_tfidf_ranking_prefers_tools_with_multiple_query_terms() {
+        // A tool matching *both* query terms should score higher than one matching only one.
+        let tools = vec![
+            (
+                "server.alpha".to_string(),
+                Some("filesystem read file operations".to_string()),
+            ),
+            (
+                "server.beta".to_string(),
+                Some("filesystem write operations".to_string()),
+            ),
+            (
+                "server.gamma".to_string(),
+                Some("network query results".to_string()),
+            ),
+        ];
+
+        let index = TfIdfIndex::build(&tools);
+
+        // Query terms: "filesystem" + "read" — alpha matches both, beta only "filesystem"
+        let terms = vec!["filesystem".to_string(), "read".to_string()];
+        let score_alpha = index.score("server.alpha", &terms);
+        let score_beta = index.score("server.beta", &terms);
+        let score_gamma = index.score("server.gamma", &terms);
+
+        assert!(
+            score_alpha > score_beta,
+            "alpha (matches both terms) should outscore beta (matches one), got {} vs {}",
+            score_alpha,
+            score_beta
+        );
+        assert!(
+            score_alpha > score_gamma,
+            "alpha should outscore gamma (no match), got {} vs {}",
+            score_alpha,
+            score_gamma
+        );
+        assert!(
+            score_beta > score_gamma,
+            "beta > gamma (beta has one match)"
+        );
     }
 
     #[test]
