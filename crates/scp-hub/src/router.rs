@@ -739,7 +739,7 @@ impl Router {
                         if !filter_result.dropped_chunks.is_empty() {
                             s.store_chunks(
                                 request_id.clone(),
-                                filter_result.dropped_chunks.clone(),
+                                filter_result.dropped_chunks,
                             );
                         }
                     }

@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Session ID type.
@@ -272,6 +272,7 @@ pub struct SessionStore {
     sessions: Arc<RwLock<HashMap<SessionId, Arc<Mutex<Session>>>>>,
     default_budget: usize,
     default_rate_limit: u32,
+    max_sessions: usize,
 }
 
 impl SessionStore {
@@ -282,6 +283,7 @@ impl SessionStore {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             default_budget,
             default_rate_limit: 60,
+            max_sessions: 5000,
         }
     }
 
@@ -292,6 +294,7 @@ impl SessionStore {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             default_budget,
             default_rate_limit,
+            max_sessions: 5000,
         }
     }
 
@@ -309,6 +312,28 @@ impl SessionStore {
         let session_id = session.id.clone();
 
         let mut sessions = self.sessions.write().await;
+
+        if sessions.len() >= self.max_sessions {
+            // Evict the session with the oldest last_active timestamp
+            let oldest_id = sessions
+                .iter()
+                .min_by_key(|(_, s)| {
+                    s.lock()
+                        .map(|s| s.last_active)
+                        .unwrap_or_else(|_| chrono::Utc::now())
+                })
+                .map(|(id, _)| id.clone());
+            if let Some(id) = oldest_id {
+                warn!(
+                    count = sessions.len(),
+                    max = self.max_sessions,
+                    evicted = %id,
+                    "session cap reached — evicting oldest session"
+                );
+                sessions.remove(&id);
+            }
+        }
+
         sessions.insert(session_id.clone(), Arc::new(Mutex::new(session)));
 
         debug!("Created session: {}", session_id);

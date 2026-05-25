@@ -25,6 +25,28 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info};
 use uuid::Uuid;
 
+/// Removes a session from the store when the SSE stream terminates.
+/// Must be embedded in the stream's unfold state — NOT used as a stack variable —
+/// so that cleanup fires at stream exhaustion rather than handler-function return.
+struct SessionCleanupGuard {
+    store: Arc<SessionStore>,
+    session_id: String,
+}
+
+impl Drop for SessionCleanupGuard {
+    fn drop(&mut self) {
+        let store = self.store.clone();
+        let id = self.session_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                store.remove(&id).await;
+                debug!("SessionCleanupGuard: removed transient GET session {}", id);
+            });
+        }
+        // If runtime is gone (process shutdown), skip silently.
+    }
+}
+
 /// HTTP client listener state.
 #[derive(Clone)]
 pub struct ListenerState {
@@ -353,6 +375,7 @@ async fn handle_post_mcp_inner(
             .unwrap()
             .as_secs();
         rate_limit_reset = now + 60;
+        session_locked.touch();
     }
 
     debug!("POST /mcp for session {}: {}", session_id, msg);
@@ -528,6 +551,16 @@ async fn handle_get_mcp(
     let outbound_rx = session_locked.outbound_tx.subscribe();
     drop(session_locked);
 
+    let is_transient = !headers.contains_key("Mcp-Session-Id");
+    let guard: Option<SessionCleanupGuard> = if is_transient {
+        Some(SessionCleanupGuard {
+            store: state.session_store.clone(),
+            session_id: session_id.clone(),
+        })
+    } else {
+        None
+    };
+
     debug!("GET /mcp SSE stream opened for session {}", session_id);
 
     // Immediate keepalive comment sent right when the connection is accepted.
@@ -549,17 +582,20 @@ async fn handle_get_mcp(
     });
 
     // Real events from the session's outbound broadcast channel.
+    // The guard is carried in the state tuple so it is dropped when the stream
+    // is exhausted (client disconnect / channel close), not when the handler returns.
     let events = stream::unfold(
-        (outbound_rx, session_id.clone()),
-        |(mut rx, sid)| async move {
+        (outbound_rx, session_id.clone(), guard),
+        |(mut rx, sid, guard)| async move {
             match rx.recv().await {
                 Ok(msg) => {
                     let json_str = serde_json::to_string(&msg).ok()?;
                     let event = Event::default().data(json_str);
-                    Some((Ok(event), (rx, sid)))
+                    Some((Ok(event), (rx, sid, guard)))
                 }
                 Err(_) => {
                     debug!("SSE stream closed for session {}", sid);
+                    drop(guard);
                     None
                 }
             }
