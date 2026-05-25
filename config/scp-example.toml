@@ -53,6 +53,33 @@ max_requests_per_min = 100
 # Burst size for rate limiting (default: 20)
 burst_size = 20
 
+# Tool exposure controls — governs what tools/list returns to each client.
+#
+# Strategy: expose a small focused set in tools/list to keep LLM context lean,
+# while allowing ALL registered tools to be called by qualified name (server/tool_name).
+# Use scp_search to discover hidden tools at runtime.
+[hub.defaults.exposure]
+
+# Server names whose tools are ALWAYS included in tools/list, up to max_tools_exposed.
+# Listed in priority order — first server fills slots before later ones.
+# Tools from pinned servers count against max_tools_exposed.
+# Individual tool pinning: use [[tool_index]] always_include = ["server/tool_name"].
+#
+# Example: pin SSH and memory tools while keeping n8n hidden until discovered via scp_search.
+pinned_servers = ["ssh-proxy", "ssh-cortex", "memory-global", "task-mcp"]
+
+# When true (default), tools/call routes any qualified 'server/tool_name' even if
+# the tool was NOT present in the session's tools/list response.
+# This makes hidden tools accessible: discover via scp_search, then call directly.
+# When false: only tools visible in tools/list are callable (stricter, Phase 2 feature).
+allow_unlisted_calls = true
+
+# When true, scp_search results include the full inputSchema for each matching tool.
+# Enables the LLM to call a discovered tool immediately without a second lookup.
+# WARNING: complex tools (e.g. n8n) have large schemas — this increases response size.
+# Default: false. Enable only if you need schema-aware one-shot tool discovery.
+search_returns_schema = false
+
 # ============================================================================
 # Admin API Configuration
 # ============================================================================
@@ -86,6 +113,12 @@ enabled = true
 
 # Maximum number of tools to index
 max_tools = 1000
+
+# Individual tool qualified names to ALWAYS include in tools/list,
+# regardless of server pinning or scoring. Use 'server/tool_name' format.
+# These fill slots before pinned_servers tools.
+# always_include = ["sequential-thinking/sequentialthinking"]
+always_include = []
 
 # ============================================================================
 # Logging Configuration

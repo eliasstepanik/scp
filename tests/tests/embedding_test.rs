@@ -42,6 +42,9 @@ async fn test_progressive_disclosure_end_to_end() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create a session
@@ -200,9 +203,11 @@ async fn test_extension_tools_always_present() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
-    // Create a session
     let (_session_id, _rx) = session_store.create_with_defaults(None).await;
 
     // Send a tools/list request
@@ -271,6 +276,9 @@ async fn test_scp_info_returns_version() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     let (_session_id, _rx) = session_store.create_with_defaults(None).await;

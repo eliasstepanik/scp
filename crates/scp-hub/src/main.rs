@@ -149,9 +149,12 @@ async fn main() -> Result<()> {
     let router = Arc::new(router::Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
-        config.hub.session_timeout_secs,
+        config.hub.defaults.fanout_timeout_secs,
         config.hub.defaults.request_token_budget,
         filter_pipeline,
+        config.hub.defaults.exposure.clone(),
+        config.tool_index.always_include.clone(),
+        config.hub.defaults.max_tools_exposed,
     ));
 
     // Create a shared shutdown signal

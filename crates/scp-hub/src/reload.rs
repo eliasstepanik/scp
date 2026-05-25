@@ -191,6 +191,7 @@ mod tests {
                     fanout_timeout_secs: 5,
                     max_requests_per_min: 100,
                     burst_size: 20,
+                    exposure: Default::default(),
                 },
                 auth: None,
                 max_response_size_bytes: Some(1_048_576),

@@ -1,4 +1,5 @@
 use crate::session_store::Session;
+use scp_core::config::ExposureConfig;
 use scp_core::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, RequestId};
 use scp_filter::dedup::DeliveryLog;
 use scp_filter::pipeline::{FilterContext, FilterPipeline};
@@ -42,6 +43,9 @@ pub struct Router {
     request_token_budget: usize,
     max_response_size_bytes: Option<usize>,
     filter_pipeline: Arc<FilterPipeline>,
+    exposure: ExposureConfig,
+    always_include: Vec<String>,
+    max_tools_exposed: usize,
 }
 
 impl Router {
@@ -53,14 +57,20 @@ impl Router {
         fanout_timeout_secs: u64,
         request_token_budget: usize,
         filter_pipeline: Arc<FilterPipeline>,
+        exposure: ExposureConfig,
+        always_include: Vec<String>,
+        max_tools_exposed: usize,
     ) -> Self {
         Self {
             pool_manager,
             tool_registry,
             fanout_timeout_secs,
             request_token_budget,
-            max_response_size_bytes: Some(1_048_576),
+            max_response_size_bytes: None,
             filter_pipeline,
+            exposure,
+            always_include,
+            max_tools_exposed,
         }
     }
 
@@ -80,7 +90,9 @@ impl Router {
         let dummy_req = JsonRpcRequest::new(RequestId::Null, "tools/list".to_string(), None);
         let response = self.handle_tools_list(&dummy_req).await;
 
-        // Count the tools and servers from the now-updated registry
+        // NOTE: handle_tools_list applies the exposure filter to its return value,
+        // so the response tool count reflects only pinned/exposed tools.
+        // The full tool count is available from the ToolRegistry directly.
         let registry = self.tool_registry.read().await;
         let tool_count = registry.tool_count();
         let server_count = registry.server_count();
@@ -321,23 +333,99 @@ impl Router {
             }
         }
 
-        // Build the tools list — always expose the qualified name (server_name/tool_name)
-        // so clients can unambiguously route calls regardless of collision status.
-        let mut all_tools: Vec<Value> = extension_tools;
-        for (server_name, tools_array, _) in &backend_tools {
-            for tool in tools_array {
-                let Some(original_name) = tool.get("name").and_then(|n| n.as_str()) else {
-                    continue;
-                };
-                let qualified_name = format!("{}/{}", server_name, original_name);
+        // Build the outbound tools/list with exposure filter.
+        // Priority order (backend tools only — extension tools are always first and uncapped):
+        //   1. always_include tools (matched by qualified "server/tool" name)
+        //   2. pinned_servers tools (in server-list order)
+        //   3. Stop at max_tools_exposed total backend tools
+        let cap = self.max_tools_exposed;
+        let always_include_set: std::collections::HashSet<&str> =
+            self.always_include.iter().map(|s| s.as_str()).collect();
+        let pinned_server_set: std::collections::HashSet<&str> =
+            self.exposure.pinned_servers.iter().map(|s| s.as_str()).collect();
 
-                let mut tool_obj = tool.clone();
-                if let Some(obj) = tool_obj.as_object_mut() {
-                    obj.insert("name".to_string(), json!(qualified_name));
+        let mut exposed_backend_tools: Vec<Value> = Vec::new();
+
+        // Pass 1: always_include tools (by qualified name match)
+        'outer_always: for (server_name, tools_array, _) in &backend_tools {
+            for tool in tools_array {
+                if exposed_backend_tools.len() >= cap {
+                    break 'outer_always;
                 }
-                all_tools.push(tool_obj);
+                let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let qualified_name = format!("{}/{}", server_name, original_name);
+                if always_include_set.contains(qualified_name.as_str()) {
+                    let mut tool_obj = tool.clone();
+                    if let Some(obj) = tool_obj.as_object_mut() {
+                        obj.insert("name".to_string(), json!(qualified_name));
+                    }
+                    exposed_backend_tools.push(tool_obj);
+                }
             }
         }
+
+        // Pass 2: pinned server tools (skip any already added in pass 1)
+        let already_added: std::collections::HashSet<String> = exposed_backend_tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            .collect();
+
+        'outer_pinned: for server_name in &self.exposure.pinned_servers {
+            if exposed_backend_tools.len() >= cap {
+                break 'outer_pinned;
+            }
+            for (sn, tools_array, _) in &backend_tools {
+                if sn != server_name {
+                    continue;
+                }
+                for tool in tools_array {
+                    if exposed_backend_tools.len() >= cap {
+                        break;
+                    }
+                    let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let qualified_name = format!("{}/{}", sn, original_name);
+                    if already_added.contains(&qualified_name) {
+                        continue;
+                    }
+                    let mut tool_obj = tool.clone();
+                    if let Some(obj) = tool_obj.as_object_mut() {
+                        obj.insert("name".to_string(), json!(qualified_name));
+                    }
+                    exposed_backend_tools.push(tool_obj);
+                }
+            }
+        }
+
+        // If cap not yet reached and pinned_servers is empty (open mode), include all remaining
+        // tools so that the default zero-config behavior is unchanged.
+        if pinned_server_set.is_empty() && always_include_set.is_empty() {
+            let already_added_open: std::collections::HashSet<String> = exposed_backend_tools
+                .iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .collect();
+            'outer_open: for (server_name, tools_array, _) in &backend_tools {
+                for tool in tools_array {
+                    if exposed_backend_tools.len() >= cap {
+                        break 'outer_open;
+                    }
+                    let original_name =
+                        tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let qualified_name = format!("{}/{}", server_name, original_name);
+                    if already_added_open.contains(&qualified_name) {
+                        continue;
+                    }
+                    let mut tool_obj = tool.clone();
+                    if let Some(obj) = tool_obj.as_object_mut() {
+                        obj.insert("name".to_string(), json!(qualified_name));
+                    }
+                    exposed_backend_tools.push(tool_obj);
+                }
+            }
+        }
+
+        // Build final tools list: SCP extension tools (uncapped) + filtered backend tools
+        let mut all_tools: Vec<Value> = extension_tools;
+        all_tools.extend(exposed_backend_tools);
 
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
@@ -345,6 +433,107 @@ impl Router {
             result: Some(json!({ "tools": all_tools })),
             error: None,
         }
+    }
+
+    /// Pure filtering helper used by tests.
+    ///
+    /// Given a list of `(server_name, tools_array)` pairs (the same data that
+    /// `handle_tools_list` collects from backends), applies the exposure filter
+    /// (`pinned_servers`, `always_include`, `max_tools_exposed`) and returns the
+    /// slice of backend tools that should appear in the outbound `tools/list`.
+    ///
+    /// Extension tools are **not** included — this is backend-tools only.
+    #[cfg(test)]
+    pub(crate) fn apply_exposure_filter(
+        &self,
+        backend_tools: &[(String, Vec<Value>)],
+    ) -> Vec<Value> {
+        let cap = self.max_tools_exposed;
+        let always_include_set: std::collections::HashSet<&str> =
+            self.always_include.iter().map(|s| s.as_str()).collect();
+        let pinned_server_set: std::collections::HashSet<&str> =
+            self.exposure.pinned_servers.iter().map(|s| s.as_str()).collect();
+
+        let mut exposed: Vec<Value> = Vec::new();
+
+        // Pass 1: always_include tools
+        'outer_always: for (server_name, tools_array) in backend_tools {
+            for tool in tools_array {
+                if exposed.len() >= cap {
+                    break 'outer_always;
+                }
+                let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let qualified = format!("{}/{}", server_name, original_name);
+                if always_include_set.contains(qualified.as_str()) {
+                    let mut tool_obj = tool.clone();
+                    if let Some(obj) = tool_obj.as_object_mut() {
+                        obj.insert("name".to_string(), json!(qualified));
+                    }
+                    exposed.push(tool_obj);
+                }
+            }
+        }
+
+        // Pass 2: pinned server tools
+        let already_added: std::collections::HashSet<String> = exposed
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            .collect();
+
+        'outer_pinned: for server_name in &self.exposure.pinned_servers {
+            if exposed.len() >= cap {
+                break 'outer_pinned;
+            }
+            for (sn, tools_array) in backend_tools {
+                if sn != server_name {
+                    continue;
+                }
+                for tool in tools_array {
+                    if exposed.len() >= cap {
+                        break;
+                    }
+                    let original_name =
+                        tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let qualified = format!("{}/{}", sn, original_name);
+                    if already_added.contains(&qualified) {
+                        continue;
+                    }
+                    let mut tool_obj = tool.clone();
+                    if let Some(obj) = tool_obj.as_object_mut() {
+                        obj.insert("name".to_string(), json!(qualified));
+                    }
+                    exposed.push(tool_obj);
+                }
+            }
+        }
+
+        // Open mode: if no pinned_servers and no always_include, include all up to cap
+        if pinned_server_set.is_empty() && always_include_set.is_empty() {
+            let already_added_open: std::collections::HashSet<String> = exposed
+                .iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .collect();
+            'outer_open: for (server_name, tools_array) in backend_tools {
+                for tool in tools_array {
+                    if exposed.len() >= cap {
+                        break 'outer_open;
+                    }
+                    let original_name =
+                        tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let qualified = format!("{}/{}", server_name, original_name);
+                    if already_added_open.contains(&qualified) {
+                        continue;
+                    }
+                    let mut tool_obj = tool.clone();
+                    if let Some(obj) = tool_obj.as_object_mut() {
+                        obj.insert("name".to_string(), json!(qualified));
+                    }
+                    exposed.push(tool_obj);
+                }
+            }
+        }
+
+        exposed
     }
 
     /// Handle tools/call request (route to specific server)
@@ -494,16 +683,55 @@ impl Router {
         // Handle extension tools
         match tool_name.as_str() {
             "scp_info" => {
+                let registry = self.tool_registry.read().await;
+
+                // Build server summary: {name -> tool_count}
+                let mut server_counts: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for tool in registry.all_tools() {
+                    if let Some(slash) = tool.qualified_name.find('/') {
+                        let server = &tool.qualified_name[..slash];
+                        *server_counts.entry(server.to_string()).or_insert(0) += 1;
+                    }
+                }
+                drop(registry);
+
+                // Sort servers by name for deterministic output
+                let mut servers: Vec<Value> = server_counts
+                    .into_iter()
+                    .map(|(name, tool_count)| json!({"name": name, "tool_count": tool_count}))
+                    .collect();
+                servers.sort_by(|a, b| {
+                    a.get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .cmp(b.get("name").and_then(|n| n.as_str()).unwrap_or(""))
+                });
+
+                let total_tools: usize = servers
+                    .iter()
+                    .filter_map(|s| s.get("tool_count").and_then(|c| c.as_u64()))
+                    .sum::<u64>() as usize;
+
+                let info = json!({
+                    "name": "scp",
+                    "version": "0.2.0",
+                    "extensions": ["progressive_disclosure"],
+                    "total_tools": total_tools,
+                    "exposed_tools": self.max_tools_exposed,
+                    "servers": servers,
+                    "pinned_servers": self.exposure.pinned_servers,
+                    "hint": "Use scp_search(query) to discover tools. Call any tool directly as 'server/tool_name' even if not in tools/list."
+                });
+
+                let text = serde_json::to_string(&info)
+                    .unwrap_or_else(|_| "{}".to_string());
+
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
                     result: Some(json!({
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": r#"{"name": "scp", "version": "0.2.0", "extensions": ["progressive_disclosure"]}"#
-                            }
-                        ]
+                        "content": [{"type": "text", "text": text}]
                     })),
                     error: None,
                 };
@@ -620,16 +848,53 @@ impl Router {
                     .unwrap_or(10) as usize;
 
                 let registry = self.tool_registry.read().await;
-                let results = registry.search_tools(&query);
+
+                // Primary: TF-IDF search over name + qualified_name + description
+                let results = registry.search_tools_scored(&query);
+
+                // Fallback: if no scored hits, do substring matching
+                let results = if results.is_empty() {
+                    let query_lower = query.to_lowercase();
+                    let mut fallback: Vec<(f32, ToolEntry)> = registry
+                        .all_tools()
+                        .into_iter()
+                        .filter(|e| {
+                            e.qualified_name.to_lowercase().contains(&query_lower)
+                                || e.description
+                                    .as_deref()
+                                    .unwrap_or("")
+                                    .to_lowercase()
+                                    .contains(&query_lower)
+                        })
+                        .map(|e| (0.1_f32, e.clone()))
+                        .collect();
+                    fallback.truncate(limit);
+                    fallback
+                } else {
+                    results
+                };
+                drop(registry);
+
+                let search_returns_schema = self.exposure.search_returns_schema;
                 let results: Vec<Value> = results
                     .into_iter()
                     .take(limit)
                     .map(|(score, entry)| {
-                        json!({
+                        let mut obj = json!({
                             "name": entry.qualified_name,
                             "score": score,
                             "description": entry.description,
-                        })
+                        });
+                        if search_returns_schema {
+                            // input_schema is always a Value; include unless it's null
+                            if !entry.input_schema.is_null() {
+                                obj.as_object_mut().unwrap().insert(
+                                    "inputSchema".to_string(),
+                                    entry.input_schema.clone(),
+                                );
+                            }
+                        }
+                        obj
                     })
                     .collect();
 
@@ -962,7 +1227,16 @@ mod tests {
     async fn test_router_ping() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
+        let router = Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
+        );
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -980,7 +1254,16 @@ mod tests {
     async fn test_router_unknown_method() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
+        let router = Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
+        );
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -997,7 +1280,16 @@ mod tests {
     async fn test_tool_not_found_empty_registry_hint() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
+        let router = Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
+        );
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1040,7 +1332,16 @@ mod tests {
             );
         }
 
-        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline());
+        let router = Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
+        );
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1066,8 +1367,17 @@ mod tests {
     fn test_response_truncated_when_exceeds_limit() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline())
-            .with_max_response_size(Some(100));
+        let router = Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
+        )
+        .with_max_response_size(Some(100));
 
         // Build a response whose JSON serialization clearly exceeds 100 bytes
         let large_text = "x".repeat(200);
@@ -1096,8 +1406,17 @@ mod tests {
     fn test_response_not_truncated_when_under_limit() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let router = Router::new(pool_manager, tool_registry, 5, 4000, make_filter_pipeline())
-            .with_max_response_size(Some(1_048_576));
+        let router = Router::new(
+            pool_manager,
+            tool_registry,
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
+        )
+        .with_max_response_size(Some(1_048_576));
 
         let small_text = "hello world";
         let response = serde_json::json!({
@@ -1115,6 +1434,279 @@ mod tests {
         assert!(
             !text.contains("[Response truncated:"),
             "No truncation notice expected"
+        );
+    }
+
+    // =========================================================================
+    // TE6: Tool Exposure filter unit tests
+    // =========================================================================
+
+    /// Build a fake `(server_name, tools_array)` pair with `n` numbered tools.
+    fn fake_server_tools(server: &str, n: usize) -> (String, Vec<Value>) {
+        let tools: Vec<Value> = (1..=n)
+            .map(|i| {
+                json!({
+                    "name": format!("tool_{}", i),
+                    "description": format!("Tool {} on {}", i, server),
+                    "inputSchema": {"type": "object", "properties": {}}
+                })
+            })
+            .collect();
+        (server.to_string(), tools)
+    }
+
+    /// Build a Router configured for exposure filtering tests.
+    fn make_exposure_router(
+        pinned_servers: Vec<&str>,
+        always_include: Vec<&str>,
+        max_tools_exposed: usize,
+    ) -> Router {
+        let exposure = scp_core::config::ExposureConfig {
+            pinned_servers: pinned_servers.into_iter().map(|s| s.to_string()).collect(),
+            allow_unlisted_calls: true,
+            search_returns_schema: false,
+        };
+        Router::new(
+            Arc::new(PoolManager::new()),
+            Arc::new(RwLock::new(ToolRegistry::new())),
+            5,
+            4000,
+            make_filter_pipeline(),
+            exposure,
+            always_include.into_iter().map(|s| s.to_string()).collect(),
+            max_tools_exposed,
+        )
+    }
+
+    // TE6 Test 1: pinned server tools are included; non-pinned tools are excluded.
+    #[test]
+    fn test_exposure_filter_pinned_server_only() {
+        let router = make_exposure_router(vec!["test-server"], vec![], 5);
+
+        let backend = vec![
+            fake_server_tools("test-server", 3),
+            fake_server_tools("other-server", 10),
+        ];
+
+        let exposed = router.apply_exposure_filter(&backend);
+
+        // Exactly 3 tools from test-server (cap=5 but only 3 available)
+        assert_eq!(
+            exposed.len(),
+            3,
+            "Should expose exactly 3 test-server tools, got {}",
+            exposed.len()
+        );
+        for tool in &exposed {
+            let name = tool["name"].as_str().unwrap_or("");
+            assert!(
+                name.starts_with("test-server/"),
+                "All exposed tools should be from test-server, got: {}",
+                name
+            );
+        }
+    }
+
+    // TE6 Test 2: always_include fills slots before pinned-server tools.
+    #[test]
+    fn test_exposure_filter_always_include_fills_first() {
+        // server-b has a "priority_tool" that must always appear first
+        let router = make_exposure_router(
+            vec!["server-a"],
+            vec!["server-b/priority_tool"],
+            3, // cap = 3 backend tools total
+        );
+
+        // server-a: 5 tools; server-b: 2 tools, one is "priority_tool"
+        let server_a = fake_server_tools("server-a", 5);
+        let server_b_tools: Vec<Value> = vec![
+            json!({"name": "priority_tool", "description": "High-priority tool"}),
+            json!({"name": "other_tool",    "description": "Low-priority tool"}),
+        ];
+        let backend = vec![server_a, ("server-b".to_string(), server_b_tools)];
+
+        let exposed = router.apply_exposure_filter(&backend);
+
+        // Cap is 3: 1 from always_include + 2 from server-a
+        assert_eq!(
+            exposed.len(),
+            3,
+            "Should expose exactly 3 backend tools (cap=3), got {}",
+            exposed.len()
+        );
+
+        // priority_tool must be present
+        let names: Vec<&str> = exposed
+            .iter()
+            .map(|t| t["name"].as_str().unwrap_or(""))
+            .collect();
+        assert!(
+            names.contains(&"server-b/priority_tool"),
+            "priority_tool must be in exposed list, got: {:?}",
+            names
+        );
+
+        // priority_tool should appear first (always_include pass runs before pinned pass)
+        assert_eq!(
+            names[0], "server-b/priority_tool",
+            "priority_tool should be the first exposed tool"
+        );
+    }
+
+    // TE6 Test 3: zero-config (no pinned, no always_include) → all tools pass through.
+    #[test]
+    fn test_exposure_filter_zero_config_passthrough() {
+        let router = make_exposure_router(vec![], vec![], 100);
+
+        let backend = vec![
+            fake_server_tools("server-x", 3),
+            fake_server_tools("server-y", 2),
+        ];
+
+        let exposed = router.apply_exposure_filter(&backend);
+
+        assert_eq!(
+            exposed.len(),
+            5,
+            "All 5 tools should pass through in zero-config mode, got {}",
+            exposed.len()
+        );
+    }
+
+    // TE6 Test 4: max_tools_exposed cap is enforced for pinned servers.
+    #[test]
+    fn test_exposure_cap_enforced() {
+        let router = make_exposure_router(vec!["server-a"], vec![], 2);
+
+        let backend = vec![fake_server_tools("server-a", 10)];
+
+        let exposed = router.apply_exposure_filter(&backend);
+
+        assert_eq!(
+            exposed.len(),
+            2,
+            "Cap of 2 should be enforced; got {}",
+            exposed.len()
+        );
+    }
+
+    // TE6 Test 5: scp_search respects the search_returns_schema flag.
+    #[tokio::test]
+    async fn test_scp_search_returns_schema_conditional() {
+        use scp_index::ToolEntry;
+
+        // --- Without schema ---
+        let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        {
+            let mut reg = tool_registry.write().await;
+            reg.register_tools(
+                "test-server",
+                vec![ToolEntry {
+                    original_name: "my_tool".to_string(),
+                    qualified_name: "test-server/my_tool".to_string(),
+                    server_name: "test-server".to_string(),
+                    description: Some("A test tool for schema flag testing".to_string()),
+                    input_schema: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+                    tags: vec![],
+                    avg_response_tokens: 0.0,
+                    call_count: 0,
+                }],
+            );
+        }
+
+        // Router with search_returns_schema = false (default)
+        let router_no_schema = Router::new(
+            Arc::new(PoolManager::new()),
+            tool_registry.clone(),
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig {
+                pinned_servers: vec![],
+                allow_unlisted_calls: true,
+                search_returns_schema: false,
+            },
+            vec![],
+            50,
+        );
+
+        let search_req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(RequestId::Number(1)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "scp_search",
+                "query": "schema",
+                "limit": 5
+            })),
+        };
+
+        let resp = router_no_schema.route(search_req.clone(), None).await;
+        assert!(resp.result.is_some(), "scp_search should return a result");
+
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let parsed: Value = serde_json::from_str(&text).expect("Should be valid JSON");
+        let results = parsed["results"].as_array().expect("Should have results");
+
+        // When search_returns_schema = false, no result should have inputSchema
+        for item in results {
+            assert!(
+                item.get("inputSchema").is_none(),
+                "search_returns_schema=false: result should NOT have inputSchema, got: {}",
+                item
+            );
+        }
+
+        // --- With schema ---
+        let router_with_schema = Router::new(
+            Arc::new(PoolManager::new()),
+            tool_registry.clone(),
+            5,
+            4000,
+            make_filter_pipeline(),
+            scp_core::config::ExposureConfig {
+                pinned_servers: vec![],
+                allow_unlisted_calls: true,
+                search_returns_schema: true,
+            },
+            vec![],
+            50,
+        );
+
+        let search_req2 = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(RequestId::Number(2)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "scp_search",
+                "query": "schema",
+                "limit": 5
+            })),
+        };
+
+        let resp2 = router_with_schema.route(search_req2, None).await;
+        assert!(resp2.result.is_some(), "scp_search should return a result");
+
+        let text2 = resp2.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let parsed2: Value = serde_json::from_str(&text2).expect("Should be valid JSON");
+        let results2 = parsed2["results"].as_array().expect("Should have results");
+
+        // With search_returns_schema = true, non-null schemas should be present
+        assert!(
+            !results2.is_empty(),
+            "Should have at least one result for the schema query"
+        );
+        let first = &results2[0];
+        assert!(
+            first.get("inputSchema").is_some(),
+            "search_returns_schema=true: result should have inputSchema, got: {}",
+            first
         );
     }
 }

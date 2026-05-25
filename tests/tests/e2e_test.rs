@@ -33,6 +33,9 @@ async fn test_full_hub_lifecycle() {
         300,  // fanout_timeout_secs
         4000, // request_token_budget
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create a session
@@ -138,6 +141,9 @@ async fn test_tool_call_proxied_through_filter() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create a session with a known budget

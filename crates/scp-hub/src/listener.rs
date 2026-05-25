@@ -711,6 +711,9 @@ mod tests {
             5,
             4000,
             filter_pipeline,
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
         ));
         ListenerState {
             session_store: store,
@@ -734,6 +737,9 @@ mod tests {
             5,
             4000,
             filter_pipeline,
+            scp_core::config::ExposureConfig::default(),
+            vec![],
+            50,
         ));
         let listener = ClientListener::new(addr, store, router, None);
         assert_eq!(listener.addr, addr);

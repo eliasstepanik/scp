@@ -32,6 +32,9 @@ async fn test_scp_get_more_returns_stored_chunks() {
         300,  // fanout_timeout_secs
         4000, // request_token_budget
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create a session and store a chunk in it

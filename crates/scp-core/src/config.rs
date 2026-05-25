@@ -105,6 +105,8 @@ pub struct HubDefaults {
     pub max_requests_per_min: u32,
     #[serde(default = "default_burst_size")]
     pub burst_size: u32,
+    #[serde(default)]
+    pub exposure: ExposureConfig,
 }
 
 fn default_request_token_budget() -> usize {
@@ -129,6 +131,45 @@ fn default_max_requests_per_min() -> u32 {
 
 fn default_burst_size() -> u32 {
     20
+}
+
+/// Controls which backend tools are exposed in `tools/list` responses.
+///
+/// The effective pinned individual tools come from `ToolIndexConfig::always_include`.
+/// `pinned_servers` here controls which entire servers are always-exposed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExposureConfig {
+    /// Server names whose tools are always included in `tools/list`, up to
+    /// `hub.defaults.max_tools_exposed`. Listed in order of priority (first = highest).
+    #[serde(default)]
+    pub pinned_servers: Vec<String>,
+
+    /// When `true`, `tools/call` routes any qualified `server/tool` name even if
+    /// the tool was not present in the session's `tools/list` response.
+    /// Default: `true` (hidden tools remain callable).
+    // TODO(tool-exposure Phase 2): when false, enforce via Session::tool_scope
+    #[serde(default = "default_true")]
+    pub allow_unlisted_calls: bool,
+
+    /// When `true`, `scp_search` results include the full `inputSchema` for each
+    /// matching tool. Increases result size significantly for complex tools.
+    /// Default: `false`.
+    #[serde(default)]
+    pub search_returns_schema: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ExposureConfig {
+    fn default() -> Self {
+        Self {
+            pinned_servers: Vec::new(),
+            allow_unlisted_calls: true,
+            search_returns_schema: false,
+        }
+    }
 }
 
 /// Server configuration

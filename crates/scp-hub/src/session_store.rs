@@ -73,7 +73,11 @@ pub struct Session {
     pub roots: Vec<Root>,
     /// Remaining token budget.
     pub token_budget_remaining: usize,
-    /// Optional tool scope filter.
+    /// Optional tool scope filter — when `Some`, only tools in this list are
+    /// visible to the session's `tools/list` response.
+    // TODO(tool-exposure Phase 2): when ExposureConfig::allow_unlisted_calls is false,
+    // enforce this scope in Router::handle_tools_list and Router::handle_tools_call
+    // to reject out-of-scope calls with error code -32601 ("Tool not found in session scope").
     pub tool_scope: Option<Vec<String>>,
     /// Request ID mapping.
     pub request_map: IdMap,

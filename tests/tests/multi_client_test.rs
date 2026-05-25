@@ -32,6 +32,9 @@ async fn test_multi_client_tools_list_and_call() {
         4000, // request_token_budget
         300,  // fanout_timeout_secs
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create two sessions (simulating two clients)
@@ -121,6 +124,9 @@ async fn test_session_budget_isolation() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create two sessions with different budgets
@@ -177,6 +183,9 @@ async fn test_request_id_isolation() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create two sessions
@@ -277,6 +286,9 @@ async fn test_concurrent_requests_same_session() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create a session
@@ -331,6 +343,9 @@ async fn test_session_isolation() {
         4000,
         300,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Create three sessions

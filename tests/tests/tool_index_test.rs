@@ -302,6 +302,9 @@ async fn test_tool_cache_invalidation_on_list_changed() {
         300,
         4000,
         make_filter_pipeline(),
+        scp_core::config::ExposureConfig::default(),
+        vec![],
+        50,
     ));
 
     // Register some tools
