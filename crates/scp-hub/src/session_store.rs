@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use scp_core::id_map::IdMap;
 use scp_core::keyword_accumulator::KeywordAccumulator;
 use scp_core::mcp_types::{ClientCapabilities, Implementation};
@@ -34,7 +35,7 @@ pub struct ToolCallRecord {
     /// Name of the server that provided the tool.
     pub server_name: String,
     /// Timestamp of the call.
-    pub timestamp: Instant,
+    pub timestamp: DateTime<Utc>,
     /// Token cost of the call.
     pub token_cost: usize,
 }
@@ -48,7 +49,7 @@ pub struct InFlightRequest {
     /// The server handling the request.
     pub server_name: String,
     /// When the request started.
-    pub started_at: Instant,
+    pub started_at: DateTime<Utc>,
 }
 
 /// Session state.
@@ -61,9 +62,9 @@ pub struct Session {
     /// Profile name for this session.
     pub profile: String,
     /// When the session was created.
-    pub created_at: Instant,
+    pub created_at: DateTime<Utc>,
     /// Last activity timestamp.
-    pub last_active: Instant,
+    pub last_active: DateTime<Utc>,
     /// Client capabilities.
     pub client_capabilities: ClientCapabilities,
     /// Client implementation info.
@@ -114,7 +115,7 @@ impl Session {
         outbound_tx: broadcast::Sender<Value>,
     ) -> Self {
         let id = Uuid::new_v4().to_string();
-        let now = Instant::now();
+        let now = Utc::now();
 
         Self {
             id: id.clone(),
@@ -132,7 +133,7 @@ impl Session {
             active_requests: HashMap::new(),
             outbound_tx,
             rate_limit_remaining: rate_limit_per_minute,
-            rate_limit_last_refill: now,
+            rate_limit_last_refill: Instant::now(),
             rate_limit_per_minute,
             keyword_accumulator: KeywordAccumulator::new(),
             delivery_log: Arc::new(Mutex::new(DeliveryLog::new(10_000))),
@@ -144,7 +145,7 @@ impl Session {
     /// Update last active time
     #[allow(dead_code)]
     pub fn touch(&mut self) {
-        self.last_active = Instant::now();
+        self.last_active = Utc::now();
     }
 
     /// Check and apply rate limiting. Returns true if request is allowed, false if rate limited.
@@ -174,7 +175,7 @@ impl Session {
         let record = ToolCallRecord {
             tool_name,
             server_name,
-            timestamp: Instant::now(),
+            timestamp: Utc::now(),
             token_cost,
         };
 
@@ -312,8 +313,8 @@ impl SessionStore {
             let s = session.lock().unwrap_or_else(|e| e.into_inner());
             summaries.push(SessionSummary {
                 id: s.id.clone(),
-                created_at: format!("{:?}", s.created_at),
-                last_active: format!("{:?}", s.last_active),
+                created_at: s.created_at.to_rfc3339(),
+                last_active: s.last_active.to_rfc3339(),
                 tool_call_count: s.call_history.len(),
                 budget_remaining: s.token_budget_remaining,
             });
@@ -348,7 +349,9 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Start a background cleanup task for expired sessions
+    /// Start a background cleanup task for expired sessions.
+    ///
+    /// Sessions whose `last_active` timestamp is older than `timeout_secs` seconds are removed.
     #[allow(dead_code)]
     pub fn start_cleanup_task(self: Arc<Self>, timeout_secs: u64) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
@@ -357,17 +360,17 @@ impl SessionStore {
                 interval.tick().await;
 
                 let sessions = self.sessions.read().await;
-                let now = Instant::now();
-                let timeout = std::time::Duration::from_secs(timeout_secs);
 
                 let expired: Vec<SessionId> = sessions
-                    .values()
-                    .filter_map(|_session_arc| {
-                        // We need to check last_active without blocking
-                        // For now, we'll skip this check in the async context
-                        // This will be improved in the actual implementation
-                        let _ = (now, timeout);
-                        None
+                    .iter()
+                    .filter_map(|(id, session_arc)| {
+                        let s = session_arc.lock().unwrap_or_else(|e| e.into_inner());
+                        let idle_secs = (Utc::now() - s.last_active).num_seconds();
+                        if idle_secs >= timeout_secs as i64 {
+                            Some(id.clone())
+                        } else {
+                            None
+                        }
                     })
                     .collect();
 
@@ -414,6 +417,39 @@ mod tests {
 
         let list = store.list().await;
         assert_eq!(list.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_timestamps_are_iso8601() {
+        let store = SessionStore::new(1000);
+        let (_id, _rx) = store.create(None, "default".to_string(), 1000, 60).await;
+
+        let list = store.list().await;
+        assert_eq!(list.len(), 1);
+
+        let summary = &list[0];
+        // RFC 3339 / ISO 8601 timestamps contain 'T' and end with 'Z' or an offset
+        assert!(
+            summary.created_at.contains('T'),
+            "created_at is not ISO8601: {}",
+            summary.created_at
+        );
+        assert!(
+            summary.last_active.contains('T'),
+            "last_active is not ISO8601: {}",
+            summary.last_active
+        );
+        // Verify it parses back correctly
+        assert!(
+            DateTime::parse_from_rfc3339(&summary.created_at).is_ok(),
+            "created_at failed rfc3339 parse: {}",
+            summary.created_at
+        );
+        assert!(
+            DateTime::parse_from_rfc3339(&summary.last_active).is_ok(),
+            "last_active failed rfc3339 parse: {}",
+            summary.last_active
+        );
     }
 
     #[tokio::test]
