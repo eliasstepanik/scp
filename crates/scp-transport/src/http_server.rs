@@ -2,6 +2,7 @@ use crate::error::TransportError;
 use scp_core::protocol::IncomingMessage;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -102,7 +103,15 @@ impl HttpServerTransport {
             .body(json_str)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
+            .map_err(|e| {
+                let mut chain = format!("{}", e);
+                let mut src = StdError::source(&e);
+                while let Some(s) = src {
+                    chain.push_str(&format!(" -> {}", s));
+                    src = s.source();
+                }
+                TransportError::ProcessError(format!("HTTP request failed: {}", chain))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -209,7 +218,15 @@ impl HttpServerTransport {
             .body(json_str)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
+            .map_err(|e| {
+                let mut chain = format!("{}", e);
+                let mut src = StdError::source(&e);
+                while let Some(s) = src {
+                    chain.push_str(&format!(" -> {}", s));
+                    src = s.source();
+                }
+                TransportError::ProcessError(format!("HTTP request failed: {}", chain))
+            })?;
 
         // Capture session ID from response if not yet set.
         if self.session_id.is_none() {
@@ -328,7 +345,15 @@ impl HttpServerTransport {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
+            .map_err(|e| {
+                let mut chain = format!("{}", e);
+                let mut src = StdError::source(&e);
+                while let Some(s) = src {
+                    chain.push_str(&format!(" -> {}", s));
+                    src = s.source();
+                }
+                TransportError::ProcessError(format!("HTTP request failed: {}", chain))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -392,7 +417,15 @@ impl HttpServerTransport {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| TransportError::ProcessError(format!("HTTP request failed: {:#}", e)))?;
+            .map_err(|e| {
+                let mut chain = format!("{}", e);
+                let mut src = StdError::source(&e);
+                while let Some(s) = src {
+                    chain.push_str(&format!(" -> {}", s));
+                    src = s.source();
+                }
+                TransportError::ProcessError(format!("HTTP request failed: {}", chain))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
