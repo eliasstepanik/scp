@@ -176,10 +176,20 @@ impl Default for ExposureConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub name: String,
+    /// Optional display prefix used when building qualified tool names.
+    /// When set, tools are exposed as `<name_prefix>/<tool>` instead of
+    /// `<name>/<tool>`. Useful when two servers share identical tool names
+    /// (e.g. `ssh-proxy` and `ssh-cortex` both expose `exec`).
+    #[serde(default)]
+    pub name_prefix: Option<String>,
     pub transport: String, // "stdio" | "sse" | "streamable_http"
     pub command: Option<String>,
     pub args: Vec<String>,
     pub url: Option<String>,
+    /// When `true`, the URL is used as-is without appending `/mcp`.
+    /// Needed for servers whose MCP endpoint lives at the root path.
+    #[serde(default)]
+    pub raw_url: bool,
     pub sharing: String, // "shared" | "pooled" | "dedicated"
     pub pool_size: Option<usize>,
     #[serde(default = "default_priority")]

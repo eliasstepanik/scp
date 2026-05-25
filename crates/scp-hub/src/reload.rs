@@ -160,10 +160,12 @@ mod tests {
         for i in 0..server_count {
             servers.push(scp_core::config::ServerConfig {
                 name: format!("server{}", i),
+                name_prefix: None,
                 transport: "stdio".to_string(),
                 command: Some("echo".to_string()),
                 args: vec![],
                 url: None,
+                raw_url: false,
                 sharing: "shared".to_string(),
                 pool_size: None,
                 priority: 100,

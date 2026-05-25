@@ -220,6 +220,18 @@ impl Router {
         let server_configs = self.pool_manager.list_server_configs().await;
         let fanout_timeout = self.fanout_timeout_secs;
 
+        // Build a map of server_name → display prefix (name_prefix or server_name itself)
+        let prefix_map: std::collections::HashMap<String, String> = server_configs
+            .iter()
+            .map(|(sn, cfg, _)| {
+                let prefix = cfg
+                    .name_prefix
+                    .clone()
+                    .unwrap_or_else(|| sn.clone());
+                (sn.clone(), prefix)
+            })
+            .collect();
+
         // Each handle resolves to (server_name, Result<response_body, error_string>)
         let mut handles: Vec<tokio::task::JoinHandle<(String, Result<Value, String>)>> = Vec::new();
         for (server_name, config, state) in server_configs {
@@ -231,9 +243,10 @@ impl Router {
             if let Some(url) = config.url.clone() {
                 // HTTP backend
                 let headers = config.headers.clone();
+                let raw_url = config.raw_url;
                 let sn = server_name.clone();
                 handles.push(tokio::spawn(async move {
-                    let mut transport = HttpServerTransport::new(url, headers);
+                    let mut transport = HttpServerTransport::new(url, headers, raw_url);
                     let req = json!({
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -282,8 +295,8 @@ impl Router {
             }
         }
 
-        // Collect (server_name, raw_tools_array, entries) before updating registry
-        let mut backend_tools: Vec<(String, Vec<Value>, Vec<ToolEntry>)> = Vec::new();
+        // Collect (server_name, display_prefix, raw_tools_array, entries) before updating registry
+        let mut backend_tools: Vec<(String, String, Vec<Value>, Vec<ToolEntry>)> = Vec::new();
 
         let results = futures::future::join_all(handles).await;
         for (server_name, result) in results.into_iter().flatten() {
@@ -297,7 +310,14 @@ impl Router {
                         .cloned()
                         .unwrap_or_default();
 
-                    // Build ToolEntry list for registry
+                    // Resolve display prefix for this server (may differ from server_name)
+                    let display_prefix = prefix_map
+                        .get(&server_name)
+                        .cloned()
+                        .unwrap_or_else(|| server_name.clone());
+
+                    // Build ToolEntry list for registry.
+                    // qualified_name uses the real server_name (canonical internal key).
                     let entries: Vec<ToolEntry> = tools_array
                         .iter()
                         .filter_map(|tool| {
@@ -318,7 +338,7 @@ impl Router {
                         })
                         .collect();
 
-                    backend_tools.push((server_name, tools_array, entries));
+                    backend_tools.push((server_name, display_prefix, tools_array, entries));
                 }
                 Err(e) => {
                     warn!("Backend {} tools/list error: {}", server_name, e)
@@ -326,19 +346,24 @@ impl Router {
             }
         }
 
-        // Update the tool registry with discovered tools
+        // Update the tool registry with discovered tools and register display aliases
         {
             let mut registry = self.tool_registry.write().await;
-            for (server_name, _, entries) in &backend_tools {
+            for (server_name, display_prefix, _, entries) in &backend_tools {
                 registry.rebuild_for_server(server_name, entries.clone());
+                // If the server has a custom name_prefix, register display aliases so that
+                // tools/call with the prefixed name resolves to the right backend.
+                registry.register_display_aliases(server_name, display_prefix);
             }
         }
 
         // Build the outbound tools/list with exposure filter.
         // Priority order (backend tools only — extension tools are always first and uncapped):
-        //   1. always_include tools (matched by qualified "server/tool" name)
+        //   1. always_include tools (matched by qualified "server/tool" or "prefix/tool" name)
         //   2. pinned_servers tools (in server-list order)
         //   3. Stop at max_tools_exposed total backend tools
+        //
+        // The exposed JSON tool name uses the display_prefix (= name_prefix or server_name).
         let cap = self.max_tools_exposed;
         let always_include_set: std::collections::HashSet<&str> =
             self.always_include.iter().map(|s| s.as_str()).collect();
@@ -351,18 +376,21 @@ impl Router {
 
         let mut exposed_backend_tools: Vec<Value> = Vec::new();
 
-        // Pass 1: always_include tools (by qualified name match)
-        'outer_always: for (server_name, tools_array, _) in &backend_tools {
+        // Pass 1: always_include tools (by canonical or display qualified name match)
+        'outer_always: for (server_name, display_prefix, tools_array, _) in &backend_tools {
             for tool in tools_array {
                 if exposed_backend_tools.len() >= cap {
                     break 'outer_always;
                 }
                 let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let qualified_name = format!("{}/{}", server_name, original_name);
-                if always_include_set.contains(qualified_name.as_str()) {
+                let canonical_qname = format!("{}/{}", server_name, original_name);
+                let display_qname = format!("{}/{}", display_prefix, original_name);
+                if always_include_set.contains(canonical_qname.as_str())
+                    || always_include_set.contains(display_qname.as_str())
+                {
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
-                        obj.insert("name".to_string(), json!(qualified_name));
+                        obj.insert("name".to_string(), json!(display_qname));
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -383,7 +411,7 @@ impl Router {
             if exposed_backend_tools.len() >= cap {
                 break 'outer_pinned;
             }
-            for (sn, tools_array, _) in &backend_tools {
+            for (sn, display_prefix, tools_array, _) in &backend_tools {
                 if sn != server_name {
                     continue;
                 }
@@ -392,13 +420,13 @@ impl Router {
                         break;
                     }
                     let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let qualified_name = format!("{}/{}", sn, original_name);
-                    if already_added.contains(&qualified_name) {
+                    let display_qname = format!("{}/{}", display_prefix, original_name);
+                    if already_added.contains(&display_qname) {
                         continue;
                     }
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
-                        obj.insert("name".to_string(), json!(qualified_name));
+                        obj.insert("name".to_string(), json!(display_qname));
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -416,19 +444,19 @@ impl Router {
                         .map(|s| s.to_string())
                 })
                 .collect();
-            'outer_open: for (server_name, tools_array, _) in &backend_tools {
+            'outer_open: for (_, display_prefix, tools_array, _) in &backend_tools {
                 for tool in tools_array {
                     if exposed_backend_tools.len() >= cap {
                         break 'outer_open;
                     }
                     let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let qualified_name = format!("{}/{}", server_name, original_name);
-                    if already_added_open.contains(&qualified_name) {
+                    let display_qname = format!("{}/{}", display_prefix, original_name);
+                    if already_added_open.contains(&display_qname) {
                         continue;
                     }
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
-                        obj.insert("name".to_string(), json!(qualified_name));
+                        obj.insert("name".to_string(), json!(display_qname));
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -622,10 +650,29 @@ impl Router {
         // to the named server without a registry lookup.
         // Also accept legacy dot-qualified form (e.g. "memory-global.search_memory") for
         // backwards compatibility.
+        //
+        // When name_prefix is configured (e.g. "proxy" for server "ssh-proxy"), the client
+        // sends "proxy/exec". We first check the registry for a display-alias that maps the
+        // prefixed name to the real server; if found, route to the real server. Otherwise fall
+        // back to using the prefix as the server name directly (the legacy behavior).
         let slash_pos = tool_name.find('/').or_else(|| tool_name.find('.'));
         if let Some(sep_pos) = slash_pos {
-            let server_name = tool_name[..sep_pos].to_string();
-            let actual_tool = tool_name[sep_pos + 1..].to_string();
+            // Try registry lookup first to resolve potential name_prefix aliases
+            let (server_name, actual_tool) = {
+                let registry = self.tool_registry.read().await;
+                if let Some(entry) = registry.lookup(&tool_name) {
+                    let sn = entry.server_name.clone();
+                    let ot = entry.original_name.clone();
+                    drop(registry);
+                    (sn, ot)
+                } else {
+                    drop(registry);
+                    (
+                        tool_name[..sep_pos].to_string(),
+                        tool_name[sep_pos + 1..].to_string(),
+                    )
+                }
+            };
 
             // Rewrite the "name" field in params to the unqualified tool name
             let mut new_params = request.params.clone().unwrap_or(serde_json::json!({}));
@@ -1121,7 +1168,7 @@ impl Router {
 
         if let Some(url) = config.url {
             // HTTP backend
-            let mut transport = HttpServerTransport::new(url, config.headers);
+            let mut transport = HttpServerTransport::new(url, config.headers, config.raw_url);
 
             let req_value = json!({
                 "jsonrpc": "2.0",

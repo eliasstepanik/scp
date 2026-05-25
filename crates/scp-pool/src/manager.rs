@@ -527,10 +527,12 @@ mod tests {
 
         let config = ServerConfig {
             name: "test".to_string(),
+            name_prefix: None,
             transport: "stdio".to_string(),
             command: Some(cmd.to_string()),
             args,
             url: None,
+            raw_url: false,
             sharing: "shared".to_string(),
             pool_size: None,
             priority: 100,
@@ -564,10 +566,12 @@ mod tests {
 
         let config = ServerConfig {
             name: "test".to_string(),
+            name_prefix: None,
             transport: "stdio".to_string(),
             command: Some(cmd.to_string()),
             args,
             url: None,
+            raw_url: false,
             sharing: "shared".to_string(),
             pool_size: None,
             priority: 100,

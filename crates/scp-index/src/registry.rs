@@ -54,6 +54,13 @@ pub struct ToolRegistry {
     aliases: HashMap<String, String>,
     /// Track collisions: original_name -> [qualified_names]
     collisions: HashMap<String, Vec<String>>,
+    /// display_qualified_name -> canonical_qualified_name
+    ///
+    /// Populated when a server has a `name_prefix` that differs from its real
+    /// server name.  E.g. `ssh-proxy` with `name_prefix = "proxy"` registers
+    /// `proxy/exec → ssh-proxy/exec` here so that `tools/call` for `proxy/exec`
+    /// resolves correctly to the `ssh-proxy` backend.
+    display_aliases: HashMap<String, String>,
     /// Usage tracker for per-profile tool call frequency
     pub usage: UsageTracker,
     /// TF-IDF index for scoring tools based on descriptions
@@ -72,6 +79,7 @@ impl ToolRegistry {
             server_tools: HashMap::new(),
             aliases: HashMap::new(),
             collisions: HashMap::new(),
+            display_aliases: HashMap::new(),
             usage: UsageTracker::new(),
             tfidf: TfIdfIndex::build(&[]),
             scorer: ScoringPipeline::new("tfidf", 0.7, 0.3),
@@ -209,15 +217,46 @@ impl ToolRegistry {
 
     /// Atomically rebuild tools for a server (unregister old, register new, rebuild index)
     pub fn rebuild_for_server(&mut self, server: &str, tools: Vec<ToolEntry>) {
+        // Clear any display aliases that pointed at this server's tools
+        self.display_aliases
+            .retain(|_, canonical| !canonical.starts_with(&format!("{}/", server)));
         self.unregister_server(server);
         self.register_tools(server, tools);
     }
 
+    /// Register display-name aliases for a server that has a `name_prefix`.
+    ///
+    /// After calling `rebuild_for_server("ssh-proxy", ...)` with `name_prefix = "proxy"`,
+    /// call this with `server = "ssh-proxy"` and `display_prefix = "proxy"` to create
+    /// `proxy/exec → ssh-proxy/exec` mappings so that `tools/call` for `proxy/exec`
+    /// resolves to the correct backend.
+    pub fn register_display_aliases(&mut self, server: &str, display_prefix: &str) {
+        if display_prefix == server {
+            return; // Nothing to do — prefix matches server name already
+        }
+        if let Some(tool_list) = self.server_tools.get(server) {
+            for canonical_qname in tool_list.clone() {
+                // canonical_qname is "server/tool"
+                if let Some(slash) = canonical_qname.find('/') {
+                    let original_name = &canonical_qname[slash + 1..];
+                    let display_qname = format!("{}/{}", display_prefix, original_name);
+                    self.display_aliases
+                        .insert(display_qname, canonical_qname.clone());
+                }
+            }
+        }
+    }
+
     /// Lookup a tool by name (qualified or unqualified)
     pub fn lookup(&self, name: &str) -> Option<&ToolEntry> {
-        // Try direct lookup first (qualified name)
+        // Try direct lookup first (canonical qualified name)
         if let Some(tool) = self.tools.get(name) {
             return Some(tool);
+        }
+
+        // Try display alias (e.g. "proxy/exec" → "ssh-proxy/exec")
+        if let Some(canonical) = self.display_aliases.get(name) {
+            return self.tools.get(canonical);
         }
 
         // Try unqualified lookup via alias
