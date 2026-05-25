@@ -160,6 +160,11 @@ impl ServerManager {
             .collect()
     }
 
+    /// Return a snapshot of all stored server configurations.
+    pub async fn list_configs(&self) -> Vec<ServerConfig> {
+        self.config.read().await.clone()
+    }
+
     /// Get status of a specific server
     #[allow(dead_code)]
     pub async fn server_status(&self, name: &str) -> Option<ServerStatus> {

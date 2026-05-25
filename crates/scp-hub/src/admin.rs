@@ -64,6 +64,8 @@ pub struct ServerStatusResponse {
     pub tool_count: usize,
     /// Whether the server is enabled.
     pub enabled: bool,
+    /// HTTP headers configured for this server, with sensitive values redacted.
+    pub headers: HashMap<String, String>,
 }
 
 impl From<ServerStatus> for ServerStatusResponse {
@@ -73,8 +75,42 @@ impl From<ServerStatus> for ServerStatusResponse {
             state: status.state.to_string(),
             tool_count: status.tool_count,
             enabled: status.enabled,
+            headers: HashMap::new(),
         }
     }
+}
+
+/// Sensitive header-name fragments (case-insensitive).
+const SENSITIVE_HEADER_PATTERNS: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "x-token",
+    "token",
+    "secret",
+    "password",
+];
+
+/// Return a copy of `headers` with values for sensitive keys replaced by
+/// `"[REDACTED]"`.  A key is considered sensitive when its lower-case form
+/// contains any of the [`SENSITIVE_HEADER_PATTERNS`].
+pub fn redact_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            let lower = k.to_lowercase();
+            let redacted = SENSITIVE_HEADER_PATTERNS
+                .iter()
+                .any(|pat| lower.contains(pat));
+            (
+                k.clone(),
+                if redacted {
+                    "[REDACTED]".to_string()
+                } else {
+                    v.clone()
+                },
+            )
+        })
+        .collect()
 }
 
 /// Tool info response.
@@ -159,8 +195,23 @@ async fn health_handler(State(state): State<AdminState>) -> impl IntoResponse {
 /// GET /servers
 async fn list_servers_handler(State(state): State<AdminState>) -> impl IntoResponse {
     let servers = state.server_manager.list_servers().await;
+    let configs = state.server_manager.list_configs().await;
+
     let response = ServerListResponse {
-        servers: servers.into_iter().map(|s| s.into()).collect(),
+        servers: servers
+            .into_iter()
+            .map(|s| {
+                let raw_headers = configs
+                    .iter()
+                    .find(|c| c.name == s.name)
+                    .map(|c| &c.headers)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut resp: ServerStatusResponse = s.into();
+                resp.headers = redact_headers(&raw_headers);
+                resp
+            })
+            .collect(),
     };
     Json(response)
 }
@@ -640,6 +691,64 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().any(|t| t.name == "read_file"));
         assert!(tools.iter().any(|t| t.name == "write_file"));
+    }
+
+    #[test]
+    fn test_redact_headers_sensitive_keys() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        headers.insert("X-Api-Key".to_string(), "my-api-key".to_string());
+        headers.insert("X-Token".to_string(), "abc123".to_string());
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        headers.insert("Accept".to_string(), "text/plain".to_string());
+
+        let redacted = redact_headers(&headers);
+
+        assert_eq!(redacted["Authorization"], "[REDACTED]");
+        assert_eq!(redacted["X-Api-Key"], "[REDACTED]");
+        assert_eq!(redacted["X-Token"], "[REDACTED]");
+        assert_eq!(redacted["Content-Type"], "application/json");
+        assert_eq!(redacted["Accept"], "text/plain");
+    }
+
+    #[test]
+    fn test_redact_headers_case_insensitive() {
+        let mut headers = HashMap::new();
+        headers.insert("AUTHORIZATION".to_string(), "Bearer token".to_string());
+        headers.insert("x-api-key".to_string(), "key-value".to_string());
+        headers.insert("My-Secret-Header".to_string(), "shh".to_string());
+        headers.insert("my-password".to_string(), "p@ss".to_string());
+
+        let redacted = redact_headers(&headers);
+
+        assert_eq!(redacted["AUTHORIZATION"], "[REDACTED]");
+        assert_eq!(redacted["x-api-key"], "[REDACTED]");
+        assert_eq!(redacted["My-Secret-Header"], "[REDACTED]");
+        assert_eq!(redacted["my-password"], "[REDACTED]");
+    }
+
+    #[test]
+    fn test_redact_headers_empty() {
+        let headers: HashMap<String, String> = HashMap::new();
+        let redacted = redact_headers(&headers);
+        assert!(redacted.is_empty());
+    }
+
+    #[test]
+    fn test_redact_headers_no_sensitive() {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        headers.insert("Accept".to_string(), "*/*".to_string());
+        headers.insert("User-Agent".to_string(), "scp/1.0".to_string());
+
+        let redacted = redact_headers(&headers);
+
+        assert_eq!(redacted["Content-Type"], "application/json");
+        assert_eq!(redacted["Accept"], "*/*");
+        assert_eq!(redacted["User-Agent"], "scp/1.0");
     }
 
     #[tokio::test]
