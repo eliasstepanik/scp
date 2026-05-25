@@ -9,7 +9,7 @@ use scp_index::ToolRegistry;
 use scp_pool::PoolManager;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 fn make_filter_pipeline() -> Arc<FilterPipeline> {
     Arc::new(FilterPipeline::new(&FilterConfig::default()))
@@ -36,6 +36,7 @@ async fn test_progressive_disclosure_end_to_end() {
         progressive_hint_text: "[SCP: {shown} of {total} results shown. Call scp_get_more(request_id=\"{id}\") for more.]".to_string(),
     };
 
+    let (shutdown_tx, _) = broadcast::channel(1);
     let _router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -45,6 +46,7 @@ async fn test_progressive_disclosure_end_to_end() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create a session
@@ -197,6 +199,7 @@ async fn test_extension_tools_always_present() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -206,6 +209,7 @@ async fn test_extension_tools_always_present() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     let (_session_id, _rx) = session_store.create_with_defaults(None).await;
@@ -270,6 +274,7 @@ async fn test_scp_info_returns_version() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -279,6 +284,7 @@ async fn test_scp_info_returns_version() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     let (_session_id, _rx) = session_store.create_with_defaults(None).await;

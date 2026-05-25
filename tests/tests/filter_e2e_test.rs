@@ -9,7 +9,7 @@ use scp_index::ToolRegistry;
 use scp_pool::PoolManager;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 fn make_filter_pipeline() -> Arc<FilterPipeline> {
     Arc::new(FilterPipeline::new(&FilterConfig::default()))
@@ -26,6 +26,7 @@ async fn test_scp_get_more_returns_stored_chunks() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
 
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -35,6 +36,7 @@ async fn test_scp_get_more_returns_stored_chunks() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create a session and store a chunk in it

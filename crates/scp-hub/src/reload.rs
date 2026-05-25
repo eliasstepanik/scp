@@ -186,6 +186,7 @@ mod tests {
                 transports: vec!["stdio".to_string()],
                 max_clients: 100,
                 session_timeout_secs: 3600,
+                shutdown_timeout_secs: 30,
                 defaults: HubDefaults {
                     request_token_budget: 4000,
                     session_token_budget: 32000,

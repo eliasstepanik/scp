@@ -7,7 +7,7 @@ use scp_index::ToolRegistry;
 use scp_pool::PoolManager;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 fn make_filter_pipeline() -> Arc<FilterPipeline> {
     Arc::new(FilterPipeline::new(&FilterConfig::default()))
@@ -27,6 +27,7 @@ async fn test_full_hub_lifecycle() {
     let _filter_config = FilterConfig::default();
 
     // Create router (the core hub component)
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -36,6 +37,7 @@ async fn test_full_hub_lifecycle() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create a session
@@ -135,6 +137,7 @@ async fn test_tool_call_proxied_through_filter() {
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
 
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -144,6 +147,7 @@ async fn test_tool_call_proxied_through_filter() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create a session with a known budget

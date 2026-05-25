@@ -705,6 +705,7 @@ mod tests {
         let filter_pipeline = Arc::new(scp_filter::pipeline::FilterPipeline::new(
             &scp_core::config::FilterConfig::default(),
         ));
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         let router = Arc::new(Router::new(
             pool_manager,
             tool_registry,
@@ -714,6 +715,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         ));
         ListenerState {
             session_store: store,
@@ -731,6 +733,7 @@ mod tests {
         let filter_pipeline = Arc::new(scp_filter::pipeline::FilterPipeline::new(
             &scp_core::config::FilterConfig::default(),
         ));
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         let router = Arc::new(Router::new(
             pool_manager,
             tool_registry,
@@ -740,6 +743,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         ));
         let listener = ClientListener::new(addr, store, router, None);
         assert_eq!(listener.addr, addr);

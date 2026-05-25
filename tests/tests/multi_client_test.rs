@@ -8,7 +8,7 @@ use scp_pool::PoolManager;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::sleep;
 
 fn make_filter_pipeline() -> Arc<FilterPipeline> {
@@ -26,6 +26,7 @@ async fn test_multi_client_tools_list_and_call() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -35,6 +36,7 @@ async fn test_multi_client_tools_list_and_call() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create two sessions (simulating two clients)
@@ -118,6 +120,7 @@ async fn test_session_budget_isolation() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -127,6 +130,7 @@ async fn test_session_budget_isolation() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create two sessions with different budgets
@@ -177,6 +181,7 @@ async fn test_request_id_isolation() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -186,6 +191,7 @@ async fn test_request_id_isolation() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create two sessions
@@ -280,6 +286,7 @@ async fn test_concurrent_requests_same_session() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -289,6 +296,7 @@ async fn test_concurrent_requests_same_session() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create a session
@@ -337,6 +345,7 @@ async fn test_session_isolation() {
     let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
     let session_store = Arc::new(SessionStore::new(32000));
     let _filter_config = FilterConfig::default();
+    let (shutdown_tx, _) = broadcast::channel(1);
     let router = Arc::new(Router::new(
         pool_manager.clone(),
         tool_registry.clone(),
@@ -346,6 +355,7 @@ async fn test_session_isolation() {
         scp_core::config::ExposureConfig::default(),
         vec![],
         50,
+        shutdown_tx,
     ));
 
     // Create three sessions

@@ -145,6 +145,9 @@ async fn main() -> Result<()> {
     // Create filter pipeline
     let filter_pipeline = Arc::new(FilterPipeline::new(&config.filter));
 
+    // Create a shared shutdown signal — created before Router so we can pass a clone in.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
     // Create router
     let router = Arc::new(router::Router::new(
         pool_manager.clone(),
@@ -155,10 +158,8 @@ async fn main() -> Result<()> {
         config.hub.defaults.exposure.clone(),
         config.tool_index.always_include.clone(),
         config.hub.defaults.max_tools_exposed,
+        shutdown_tx.clone(),
     ));
-
-    // Create a shared shutdown signal
-    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 
     // Start admin API with graceful shutdown
     let admin_state = AdminState {
@@ -244,7 +245,7 @@ async fn main() -> Result<()> {
 
     // Wait for all servers to shut down gracefully
     let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(config.hub.session_timeout_secs),
+        std::time::Duration::from_secs(config.hub.shutdown_timeout_secs),
         async {
             let _ = admin_handle.await;
             let _ = client_handle.await;

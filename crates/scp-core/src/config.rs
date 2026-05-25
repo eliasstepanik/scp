@@ -58,6 +58,8 @@ pub struct HubConfig {
     pub max_clients: usize,
     #[serde(default = "default_session_timeout_secs")]
     pub session_timeout_secs: u64,
+    #[serde(default = "default_shutdown_timeout_secs")]
+    pub shutdown_timeout_secs: u64,
     pub defaults: HubDefaults,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
@@ -88,6 +90,10 @@ fn default_max_clients() -> usize {
 
 fn default_session_timeout_secs() -> u64 {
     3600
+}
+
+fn default_shutdown_timeout_secs() -> u64 {
+    30
 }
 
 /// Hub default values

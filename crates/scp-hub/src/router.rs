@@ -9,7 +9,7 @@ use scp_transport::http_server::HttpServerTransport;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -46,6 +46,9 @@ pub struct Router {
     exposure: ExposureConfig,
     always_include: Vec<String>,
     max_tools_exposed: usize,
+    /// Sender used to subscribe to the shutdown signal inside `call_backend`.
+    /// When cancelled, in-flight backend calls are aborted immediately.
+    shutdown_tx: broadcast::Sender<()>,
 }
 
 impl Router {
@@ -61,6 +64,7 @@ impl Router {
         exposure: ExposureConfig,
         always_include: Vec<String>,
         max_tools_exposed: usize,
+        shutdown_tx: broadcast::Sender<()>,
     ) -> Self {
         Self {
             pool_manager,
@@ -72,6 +76,7 @@ impl Router {
             exposure,
             always_include,
             max_tools_exposed,
+            shutdown_tx,
         }
     }
 
@@ -241,9 +246,11 @@ impl Router {
                 // HTTP backend
                 let headers = config.headers.clone();
                 let raw_url = config.raw_url;
+                let connect_timeout = config.timeouts.connect_secs;
+                let request_timeout = config.timeouts.request_secs;
                 let sn = server_name.clone();
                 handles.push(tokio::spawn(async move {
-                    let mut transport = HttpServerTransport::new(url, headers, raw_url);
+                    let mut transport = HttpServerTransport::new(url, headers, raw_url, connect_timeout, request_timeout);
                     let req = json!({
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -1163,9 +1170,18 @@ impl Router {
             .await
             .map_err(|_| RouterError::ServerNotFound(server_name.to_string()))?;
 
+        // Subscribe to the shutdown signal so we can abort in-flight calls immediately.
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
         if let Some(url) = config.url {
             // HTTP backend
-            let mut transport = HttpServerTransport::new(url, config.headers, config.raw_url);
+            let mut transport = HttpServerTransport::new(
+                url,
+                config.headers,
+                config.raw_url,
+                config.timeouts.connect_secs,
+                config.timeouts.request_secs,
+            );
 
             let req_value = json!({
                 "jsonrpc": "2.0",
@@ -1174,15 +1190,24 @@ impl Router {
                 "params": params.unwrap_or(json!({}))
             });
 
-            let response = tokio::time::timeout(
+            let backend_fut = tokio::time::timeout(
                 std::time::Duration::from_secs(self.fanout_timeout_secs),
                 transport.send_request(&req_value),
-            )
-            .await
-            .map_err(|_| {
-                RouterError::PoolError(format!("Timeout calling backend {}", server_name))
-            })?
-            .map_err(|e| RouterError::PoolError(e.to_string()))?;
+            );
+
+            let response = tokio::select! {
+                res = backend_fut => {
+                    res.map_err(|_| {
+                        RouterError::PoolError(format!("Timeout calling backend {}", server_name))
+                    })?
+                    .map_err(|e| RouterError::PoolError(e.to_string()))?
+                }
+                _ = shutdown_rx.recv() => {
+                    return Err(RouterError::PoolError(format!(
+                        "Shutdown: aborted in-flight call to backend {}", server_name
+                    )));
+                }
+            };
 
             Ok(self.maybe_truncate_response(response))
         } else if config.command.is_some() {
@@ -1191,7 +1216,7 @@ impl Router {
             // the configured fanout limit.
             let pool_manager = self.pool_manager.clone();
             let sn = server_name.to_string();
-            let result = tokio::time::timeout(
+            let backend_fut = tokio::time::timeout(
                 std::time::Duration::from_secs(self.fanout_timeout_secs),
                 async move {
                     let pool = pool_manager
@@ -1202,11 +1227,20 @@ impl Router {
                         .await
                         .map_err(|e| RouterError::PoolError(e.to_string()))
                 },
-            )
-            .await
-            .map_err(|_| {
-                RouterError::PoolError(format!("Timeout calling backend {}", server_name))
-            })??;
+            );
+
+            let result = tokio::select! {
+                res = backend_fut => {
+                    res.map_err(|_| {
+                        RouterError::PoolError(format!("Timeout calling backend {}", server_name))
+                    })??
+                }
+                _ = shutdown_rx.recv() => {
+                    return Err(RouterError::PoolError(format!(
+                        "Shutdown: aborted in-flight call to backend {}", server_name
+                    )));
+                }
+            };
 
             // Wrap result to match HTTP response shape expected by callers
             Ok(self.maybe_truncate_response(json!({ "result": result })))
@@ -1288,6 +1322,7 @@ mod tests {
     async fn test_router_ping() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let (shutdown_tx, _) = broadcast::channel(1);
         let router = Router::new(
             pool_manager,
             tool_registry,
@@ -1297,6 +1332,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         );
 
         let request = JsonRpcRequest {
@@ -1315,6 +1351,7 @@ mod tests {
     async fn test_router_unknown_method() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let (shutdown_tx, _) = broadcast::channel(1);
         let router = Router::new(
             pool_manager,
             tool_registry,
@@ -1324,6 +1361,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         );
 
         let request = JsonRpcRequest {
@@ -1341,6 +1379,7 @@ mod tests {
     async fn test_tool_not_found_empty_registry_hint() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let (shutdown_tx, _) = broadcast::channel(1);
         let router = Router::new(
             pool_manager,
             tool_registry,
@@ -1350,6 +1389,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         );
 
         let request = JsonRpcRequest {
@@ -1393,6 +1433,7 @@ mod tests {
             );
         }
 
+        let (shutdown_tx, _) = broadcast::channel(1);
         let router = Router::new(
             pool_manager,
             tool_registry,
@@ -1402,6 +1443,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         );
 
         let request = JsonRpcRequest {
@@ -1428,6 +1470,7 @@ mod tests {
     fn test_response_truncated_when_exceeds_limit() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let (shutdown_tx, _) = broadcast::channel(1);
         let router = Router::new(
             pool_manager,
             tool_registry,
@@ -1437,6 +1480,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         )
         .with_max_response_size(Some(100));
 
@@ -1467,6 +1511,7 @@ mod tests {
     fn test_response_not_truncated_when_under_limit() {
         let pool_manager = Arc::new(PoolManager::new());
         let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let (shutdown_tx, _) = broadcast::channel(1);
         let router = Router::new(
             pool_manager,
             tool_registry,
@@ -1476,6 +1521,7 @@ mod tests {
             scp_core::config::ExposureConfig::default(),
             vec![],
             50,
+            shutdown_tx,
         )
         .with_max_response_size(Some(1_048_576));
 
@@ -1527,6 +1573,7 @@ mod tests {
             allow_unlisted_calls: true,
             search_returns_schema: false,
         };
+        let (shutdown_tx, _) = broadcast::channel(1);
         Router::new(
             Arc::new(PoolManager::new()),
             Arc::new(RwLock::new(ToolRegistry::new())),
@@ -1536,6 +1583,7 @@ mod tests {
             exposure,
             always_include.into_iter().map(|s| s.to_string()).collect(),
             max_tools_exposed,
+            shutdown_tx,
         )
     }
 
@@ -1676,6 +1724,7 @@ mod tests {
         }
 
         // Router with search_returns_schema = false (default)
+        let (shutdown_tx_no_schema, _) = broadcast::channel(1);
         let router_no_schema = Router::new(
             Arc::new(PoolManager::new()),
             tool_registry.clone(),
@@ -1689,6 +1738,7 @@ mod tests {
             },
             vec![],
             50,
+            shutdown_tx_no_schema,
         );
 
         let search_req = JsonRpcRequest {
@@ -1724,6 +1774,7 @@ mod tests {
         }
 
         // --- With schema ---
+        let (shutdown_tx_with_schema, _) = broadcast::channel(1);
         let router_with_schema = Router::new(
             Arc::new(PoolManager::new()),
             tool_registry.clone(),
@@ -1737,6 +1788,7 @@ mod tests {
             },
             vec![],
             50,
+            shutdown_tx_with_schema,
         );
 
         let search_req2 = JsonRpcRequest {
