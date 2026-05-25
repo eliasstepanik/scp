@@ -289,6 +289,100 @@ impl ToolRegistry {
         scored
     }
 
+    /// Search tools by query string using TF-IDF scoring over name + description.
+    ///
+    /// Builds an ad-hoc TF-IDF index that incorporates both the tool's qualified
+    /// name and its description as the document text, then returns all tools with
+    /// a non-zero score sorted highest-first.  The returned entries are cloned so
+    /// the caller owns them without holding a borrow on the registry.
+    pub fn search_tools_scored(&self, query: &str) -> Vec<(f32, ToolEntry)> {
+        use crate::tfidf::tokenize;
+
+        let query_terms = tokenize(query);
+        if query_terms.is_empty() {
+            return Vec::new();
+        }
+
+        // Build document text = original_name (with underscores/hyphens replaced by spaces)
+        // + qualified_name + description, so that name tokens are searchable.
+        let pairs: Vec<(String, String)> = self
+            .tools
+            .values()
+            .map(|entry| {
+                let name_tokens = entry
+                    .original_name
+                    .replace('_', " ")
+                    .replace('-', " ");
+                let text = format!(
+                    "{} {} {}",
+                    name_tokens,
+                    entry.qualified_name,
+                    entry.description.as_deref().unwrap_or("")
+                );
+                (entry.qualified_name.clone(), text)
+            })
+            .collect();
+
+        let n = pairs.len() as f32;
+
+        // Tokenize each document
+        let doc_tokens: Vec<(String, Vec<String>)> = pairs
+            .iter()
+            .map(|(name, text)| (name.clone(), tokenize(text)))
+            .collect();
+
+        // Compute document frequency per term
+        let mut df: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        for (_, tokens) in &doc_tokens {
+            let unique: std::collections::HashSet<&String> = tokens.iter().collect();
+            for term in unique {
+                *df.entry(term.clone()).or_insert(0) += 1;
+            }
+        }
+
+        // Score each tool
+        let mut scored: Vec<(f32, ToolEntry)> = doc_tokens
+            .iter()
+            .filter_map(|(qualified_name, tokens)| {
+                if tokens.is_empty() {
+                    return None;
+                }
+
+                let total = tokens.len() as f32;
+                let mut tf_map: std::collections::HashMap<&str, f32> =
+                    std::collections::HashMap::new();
+                for token in tokens {
+                    *tf_map.entry(token.as_str()).or_insert(0.0) += 1.0 / total;
+                }
+
+                let score: f32 = query_terms
+                    .iter()
+                    .map(|term| {
+                        let tf = tf_map.get(term.as_str()).copied().unwrap_or(0.0);
+                        let doc_freq = df.get(term).copied().unwrap_or(0) as f32;
+                        // IDF: ln(N / df); terms absent from corpus get 0
+                        let idf = if doc_freq > 0.0 {
+                            (n / doc_freq).ln().max(0.0)
+                        } else {
+                            0.0
+                        };
+                        tf * idf
+                    })
+                    .sum();
+
+                if score > 0.0 {
+                    let entry = self.tools.get(qualified_name)?.clone();
+                    Some((score, entry))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        scored
+    }
+
     /// Get tool count
     pub fn tool_count(&self) -> usize {
         self.tools.len()
@@ -564,6 +658,71 @@ mod tests {
         // Verify server tools list was updated
         let server_tools = registry.list_tools_for_server("serverA");
         assert_eq!(server_tools.len(), 2);
+    }
+
+    #[test]
+    fn test_tfidf_exact_name_match_ranks_first() {
+        let mut registry = ToolRegistry::new();
+
+        let mut read_file = create_test_tool("read_file");
+        read_file.description = Some("reads a file from the disk".to_string());
+
+        let mut web_search = create_test_tool("web_search");
+        web_search.description = Some("queries the internet for information".to_string());
+
+        registry.register_tools("server", vec![read_file, web_search]);
+
+        // "read_file" appears literally in the qualified name of read_file tool
+        let results = registry.search_tools_scored("read file");
+        assert!(!results.is_empty(), "should return results for 'read file'");
+        assert_eq!(
+            results[0].1.original_name, "read_file",
+            "read_file tool should rank first"
+        );
+    }
+
+    #[test]
+    fn test_tfidf_multi_term_query() {
+        let mut registry = ToolRegistry::new();
+
+        let mut alpha = create_test_tool("alpha");
+        alpha.description = Some("filesystem read file operations".to_string());
+
+        let mut beta = create_test_tool("beta");
+        beta.description = Some("filesystem write operations".to_string());
+
+        let mut gamma = create_test_tool("gamma");
+        gamma.description = Some("network query results".to_string());
+
+        registry.register_tools("server", vec![alpha, beta, gamma]);
+
+        // alpha matches "filesystem" + "read", beta matches only "filesystem", gamma matches none
+        let results = registry.search_tools_scored("filesystem read");
+        assert!(!results.is_empty());
+
+        let names: Vec<&str> = results
+            .iter()
+            .map(|(_, e)| e.original_name.as_str())
+            .collect();
+        let pos_alpha = names.iter().position(|&n| n == "alpha");
+        let pos_beta = names.iter().position(|&n| n == "beta");
+
+        assert!(pos_alpha.is_some(), "alpha should be in results");
+        assert!(pos_beta.is_some(), "beta should be in results");
+        assert!(
+            pos_alpha.unwrap() < pos_beta.unwrap(),
+            "alpha (two matches) should rank above beta (one match)"
+        );
+    }
+
+    #[test]
+    fn test_tfidf_empty_registry_returns_empty() {
+        let registry = ToolRegistry::new();
+        let results = registry.search_tools_scored("anything");
+        assert!(
+            results.is_empty(),
+            "empty registry should return no results"
+        );
     }
 
     #[test]
