@@ -296,6 +296,17 @@ async fn enable_server_handler(
     }
 }
 
+/// Returns true when two server configs differ in ways that require a process restart.
+fn server_config_changed(old: &ServerConfig, new: &ServerConfig) -> bool {
+    old.transport != new.transport
+        || old.command != new.command
+        || old.args != new.args
+        || old.url != new.url
+        || old.env != new.env
+        || old.headers != new.headers
+        || old.enabled != new.enabled
+}
+
 /// POST /config/reload
 async fn reload_config_handler(State(state): State<AdminState>) -> impl IntoResponse {
     let Some(ref config_path) = state.config_path else {
@@ -306,23 +317,109 @@ async fn reload_config_handler(State(state): State<AdminState>) -> impl IntoResp
             .into_response();
     };
 
-    match scp_core::config::load_config(config_path) {
-        Ok(new_config) => {
-            // Add new servers that aren't currently registered (add_server is idempotent — it
-            // returns ServerAlreadyExists for duplicates, which we silently ignore)
-            for server_cfg in &new_config.servers {
-                if server_cfg.enabled {
-                    let _ = state.server_manager.add_server(server_cfg.clone()).await;
+    let new_config = match scp_core::config::load_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Failed to reload config: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Snapshot the currently running server configs before we mutate anything.
+    let current_configs = state.server_manager.list_configs().await;
+
+    let current_map: std::collections::HashMap<&str, &ServerConfig> = current_configs
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+
+    let new_map: std::collections::HashMap<&str, &ServerConfig> = new_config
+        .servers
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut restarted = 0usize;
+
+    // Removed servers: present in current but absent from new config.
+    for name in current_map.keys() {
+        if !new_map.contains_key(name) {
+            if let Err(e) = state.server_manager.remove_server(name).await {
+                info!("reload: failed to remove server {}: {}", name, e);
+            } else {
+                removed += 1;
+                info!("reload: removed server {}", name);
+            }
+        }
+    }
+
+    // Added or changed servers.
+    for (name, new_cfg) in &new_map {
+        if let Some(old_cfg) = current_map.get(name) {
+            if server_config_changed(old_cfg, new_cfg) {
+                // Config changed — remove then re-add to restart the process.
+                if let Err(e) = state.server_manager.remove_server(name).await {
+                    info!(
+                        "reload: failed to remove server {} for restart: {}",
+                        name, e
+                    );
+                    continue;
+                }
+                if new_cfg.enabled {
+                    if let Err(e) = state.server_manager.add_server((*new_cfg).clone()).await {
+                        info!("reload: failed to re-add server {}: {}", name, e);
+                    } else {
+                        restarted += 1;
+                        info!("reload: restarted server {}", name);
+                    }
+                } else {
+                    removed += 1;
+                    info!("reload: removed disabled server {}", name);
                 }
             }
-            (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+            // Unchanged — no-op.
+        } else {
+            // New server.
+            if new_cfg.enabled {
+                if let Err(e) = state.server_manager.add_server((*new_cfg).clone()).await {
+                    info!("reload: failed to add server {}: {}", name, e);
+                } else {
+                    added += 1;
+                    info!("reload: added server {}", name);
+                }
+            }
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("Failed to reload config: {}", e)})),
-        )
-            .into_response(),
     }
+
+    // Invalidate the tool registry so the next tools/list re-discovers all tools.
+    // Each server's tools are already cleaned up by remove_server → unregister_server.
+    // Clearing the shared registry handle here ensures any stale entries are purged.
+    if let Some(registry) = &state.tool_registry {
+        let mut reg = registry.write().await;
+        *reg = scp_index::ToolRegistry::new();
+        info!("reload: tool registry cleared");
+    }
+
+    info!(
+        "reload: complete — added={}, removed={}, restarted={}",
+        added, removed, restarted
+    );
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "added": added,
+            "removed": removed,
+            "restarted": restarted,
+        })),
+    )
+        .into_response()
 }
 
 /// GET /admin/sessions/:id
