@@ -347,7 +347,7 @@ impl Router {
         {
             let mut registry = self.tool_registry.write().await;
             for (server_name, display_prefix, _, entries) in &backend_tools {
-                registry.rebuild_for_server(server_name, entries.clone());
+                registry.rebuild_for_server(server_name, display_prefix, entries.clone());
                 // If the server has a custom name_prefix, register display aliases so that
                 // tools/call with the prefixed name resolves to the right backend.
                 registry.register_display_aliases(server_name, display_prefix);

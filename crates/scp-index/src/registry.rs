@@ -95,32 +95,55 @@ impl ToolRegistry {
 
     /// Register tools from a server
     pub fn register_tools(&mut self, server: &str, tools: Vec<ToolEntry>) {
+        self.register_tools_with_prefix(server, server, tools);
+    }
+
+    /// Register tools from a server, optionally suppressing bare-name collision
+    /// detection when the server exposes its tools under a distinct display prefix.
+    ///
+    /// When `display_prefix != server` (i.e. the server has a `name_prefix`
+    /// configured), bare-name aliases are **not** registered and collision
+    /// detection against bare names is skipped, because the tools will never
+    /// be looked up by their bare name — only as `prefix/tool`.
+    fn register_tools_with_prefix(
+        &mut self,
+        server: &str,
+        display_prefix: &str,
+        tools: Vec<ToolEntry>,
+    ) {
+        let has_prefix = !display_prefix.is_empty() && display_prefix != server;
         let mut server_tool_list = Vec::new();
 
         for mut tool in tools {
             let original_name = tool.original_name.clone();
             let qualified_name = format!("{}/{}", server, original_name);
 
-            // Check for collision
-            if let Some(existing_qualified) = self.aliases.get(&original_name) {
-                // Collision detected
-                warn!(
-                    "Tool name collision: {} from {} conflicts with {}",
-                    original_name, server, existing_qualified
-                );
+            // Only manage bare-name aliases when the server has no distinct display
+            // prefix.  When a prefix is set (e.g. "proxy" for "ssh-proxy"), the
+            // tool is never looked up by its bare name, so collision detection
+            // between prefixed servers would produce spurious warnings.
+            if !has_prefix {
+                // Check for collision
+                if let Some(existing_qualified) = self.aliases.get(&original_name) {
+                    // Collision detected
+                    warn!(
+                        "Tool name collision: {} from {} conflicts with {}",
+                        original_name, server, existing_qualified
+                    );
 
-                // Record collision
-                self.collisions
-                    .entry(original_name.clone())
-                    .or_default()
-                    .push(qualified_name.clone());
+                    // Record collision
+                    self.collisions
+                        .entry(original_name.clone())
+                        .or_default()
+                        .push(qualified_name.clone());
 
-                // Remove unqualified alias since there's a collision
-                self.aliases.remove(&original_name);
-            } else {
-                // No collision yet, add unqualified alias
-                self.aliases
-                    .insert(original_name.clone(), qualified_name.clone());
+                    // Remove unqualified alias since there's a collision
+                    self.aliases.remove(&original_name);
+                } else {
+                    // No collision yet, add unqualified alias
+                    self.aliases
+                        .insert(original_name.clone(), qualified_name.clone());
+                }
             }
 
             // Update qualified name and server name
@@ -215,13 +238,24 @@ impl ToolRegistry {
         }
     }
 
-    /// Atomically rebuild tools for a server (unregister old, register new, rebuild index)
-    pub fn rebuild_for_server(&mut self, server: &str, tools: Vec<ToolEntry>) {
+    /// Atomically rebuild tools for a server (unregister old, register new, rebuild index).
+    ///
+    /// `display_prefix` is the prefix under which the server's tools are exposed to
+    /// clients (i.e. the `name_prefix` config value, or the server name if none is
+    /// set).  When `display_prefix != server`, bare-name collision detection is
+    /// suppressed because the tools are only reachable as `prefix/tool`, not by
+    /// their bare names.
+    pub fn rebuild_for_server(
+        &mut self,
+        server: &str,
+        display_prefix: &str,
+        tools: Vec<ToolEntry>,
+    ) {
         // Clear any display aliases that pointed at this server's tools
         self.display_aliases
             .retain(|_, canonical| !canonical.starts_with(&format!("{}/", server)));
         self.unregister_server(server);
-        self.register_tools(server, tools);
+        self.register_tools_with_prefix(server, display_prefix, tools);
     }
 
     /// Register display-name aliases for a server that has a `name_prefix`.
@@ -683,7 +717,7 @@ mod tests {
 
         // Rebuild with new tools (2 new tools, 1 old tool removed)
         let new_tools = vec![create_test_tool("search"), create_test_tool("query")];
-        registry.rebuild_for_server("serverA", new_tools);
+        registry.rebuild_for_server("serverA", "serverA", new_tools);
 
         // Verify old tools are gone and new ones are present
         assert_eq!(registry.tool_count(), 2);

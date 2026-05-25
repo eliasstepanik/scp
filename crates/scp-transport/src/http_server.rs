@@ -61,16 +61,15 @@ impl HttpServerTransport {
             })?,
         );
 
-        // Add custom headers
+        // Add custom headers — use entry().or_insert() so that config headers
+        // cannot overwrite required headers already set above (e.g. Accept).
         for (key, value) in &self.headers {
-            headers.insert(
-                reqwest::header::HeaderName::from_bytes(key.as_bytes()).map_err(|_| {
-                    TransportError::InvalidMessage(format!("Invalid header name: {}", key))
-                })?,
-                value.parse().map_err(|_| {
-                    TransportError::InvalidMessage(format!("Invalid header value: {}", value))
-                })?,
-            );
+            if let (Ok(name), Ok(val)) = (
+                reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+                value.parse::<reqwest::header::HeaderValue>(),
+            ) {
+                headers.entry(name).or_insert(val);
+            }
         }
 
         // Add session ID header if set
@@ -125,13 +124,14 @@ impl HttpServerTransport {
             })?,
         );
 
-        // Add custom headers
+        // Add custom headers — use entry().or_insert() so that config headers
+        // cannot overwrite required headers already set above (e.g. Accept).
         for (key, value) in &self.headers {
             if let (Ok(name), Ok(val)) = (
                 reqwest::header::HeaderName::from_bytes(key.as_bytes()),
                 reqwest::header::HeaderValue::from_str(value),
             ) {
-                req_headers.insert(name, val);
+                req_headers.entry(name).or_insert(val);
             }
         }
 
