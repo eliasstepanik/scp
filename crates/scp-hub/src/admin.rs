@@ -552,7 +552,7 @@ async fn list_tools_handler(
                 }
             })
             .map(|entry| {
-                let (server, name) = if let Some(pos) = entry.qualified_name.find('.') {
+                let (server, name) = if let Some(pos) = entry.qualified_name.find('/') {
                     (
                         entry.qualified_name[..pos].to_string(),
                         entry.qualified_name[pos + 1..].to_string(),

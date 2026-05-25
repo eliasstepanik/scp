@@ -25,7 +25,7 @@ async fn test_tools_list_scoring_respects_context() {
         let server_a_tools = vec![
             ToolEntry {
                 original_name: "read_file".to_string(),
-                qualified_name: "server_a.read_file".to_string(),
+                qualified_name: "server_a/read_file".to_string(),
                 server_name: "server_a".to_string(),
                 description: Some("Read file from filesystem disk storage".to_string()),
                 input_schema: json!({}),
@@ -35,7 +35,7 @@ async fn test_tools_list_scoring_respects_context() {
             },
             ToolEntry {
                 original_name: "write_file".to_string(),
-                qualified_name: "server_a.write_file".to_string(),
+                qualified_name: "server_a/write_file".to_string(),
                 server_name: "server_a".to_string(),
                 description: Some("Write file to filesystem disk storage".to_string()),
                 input_schema: json!({}),
@@ -45,7 +45,7 @@ async fn test_tools_list_scoring_respects_context() {
             },
             ToolEntry {
                 original_name: "list_dir".to_string(),
-                qualified_name: "server_a.list_dir".to_string(),
+                qualified_name: "server_a/list_dir".to_string(),
                 server_name: "server_a".to_string(),
                 description: Some("List directory contents filesystem".to_string()),
                 input_schema: json!({}),
@@ -59,7 +59,7 @@ async fn test_tools_list_scoring_respects_context() {
         let server_b_tools = vec![
             ToolEntry {
                 original_name: "web_search".to_string(),
-                qualified_name: "server_b.web_search".to_string(),
+                qualified_name: "server_b/web_search".to_string(),
                 server_name: "server_b".to_string(),
                 description: Some("Search web internet query results".to_string()),
                 input_schema: json!({}),
@@ -69,7 +69,7 @@ async fn test_tools_list_scoring_respects_context() {
             },
             ToolEntry {
                 original_name: "get_url".to_string(),
-                qualified_name: "server_b.get_url".to_string(),
+                qualified_name: "server_b/get_url".to_string(),
                 server_name: "server_b".to_string(),
                 description: Some("Fetch content from web URL search".to_string()),
                 input_schema: json!({}),
@@ -79,7 +79,7 @@ async fn test_tools_list_scoring_respects_context() {
             },
             ToolEntry {
                 original_name: "parse_html".to_string(),
-                qualified_name: "server_b.parse_html".to_string(),
+                qualified_name: "server_b/parse_html".to_string(),
                 server_name: "server_b".to_string(),
                 description: Some("Parse HTML web content search".to_string()),
                 input_schema: json!({}),
@@ -103,7 +103,7 @@ async fn test_tools_list_scoring_respects_context() {
         assert_eq!(scored.len(), 3, "Should return 3 tools");
         let server_a_count = scored
             .iter()
-            .filter(|t| t.qualified_name.starts_with("server_a."))
+            .filter(|t| t.qualified_name.starts_with("server_a/"))
             .count();
         assert!(
             server_a_count >= 2,
@@ -122,7 +122,7 @@ async fn test_tools_list_scoring_respects_context() {
         assert_eq!(scored.len(), 3, "Should return 3 tools");
         let server_b_count = scored
             .iter()
-            .filter(|t| t.qualified_name.starts_with("server_b."))
+            .filter(|t| t.qualified_name.starts_with("server_b/"))
             .count();
         assert!(
             server_b_count >= 2,
@@ -151,7 +151,7 @@ async fn test_tools_list_respects_max_exposed() {
             for tool_idx in 1..=5 {
                 tools.push(ToolEntry {
                     original_name: format!("tool_{}", tool_idx),
-                    qualified_name: format!("{}.tool_{}", server_name, tool_idx),
+                    qualified_name: format!("{}/tool_{}", server_name, tool_idx),
                     server_name: server_name.clone(),
                     description: Some(format!("Tool {} from {}", tool_idx, server_name)),
                     input_schema: json!({}),
@@ -302,7 +302,7 @@ async fn test_tool_cache_invalidation_on_list_changed() {
         let mut registry = tool_registry.write().await;
         let tools = vec![ToolEntry {
             original_name: "test_tool".to_string(),
-            qualified_name: "server_a.test_tool".to_string(),
+            qualified_name: "server_a/test_tool".to_string(),
             server_name: "server_a".to_string(),
             description: Some("Test tool".to_string()),
             input_schema: json!({}),
@@ -356,7 +356,7 @@ async fn test_usage_tracking_affects_ranking() {
         let tools = vec![
             ToolEntry {
                 original_name: "tool_a".to_string(),
-                qualified_name: "server_a.tool_a".to_string(),
+                qualified_name: "server_a/tool_a".to_string(),
                 server_name: "server_a".to_string(),
                 description: Some("Tool A".to_string()),
                 input_schema: json!({}),
@@ -366,7 +366,7 @@ async fn test_usage_tracking_affects_ranking() {
             },
             ToolEntry {
                 original_name: "tool_b".to_string(),
-                qualified_name: "server_a.tool_b".to_string(),
+                qualified_name: "server_a/tool_b".to_string(),
                 server_name: "server_a".to_string(),
                 description: Some("Tool B".to_string()),
                 input_schema: json!({}),
@@ -376,7 +376,7 @@ async fn test_usage_tracking_affects_ranking() {
             },
             ToolEntry {
                 original_name: "tool_c".to_string(),
-                qualified_name: "server_a.tool_c".to_string(),
+                qualified_name: "server_a/tool_c".to_string(),
                 server_name: "server_a".to_string(),
                 description: Some("Tool C".to_string()),
                 input_schema: json!({}),
@@ -386,7 +386,7 @@ async fn test_usage_tracking_affects_ranking() {
             },
             ToolEntry {
                 original_name: "tool_d".to_string(),
-                qualified_name: "server_a.tool_d".to_string(),
+                qualified_name: "server_a/tool_d".to_string(),
                 server_name: "server_a".to_string(),
                 description: Some("Tool D".to_string()),
                 input_schema: json!({}),
@@ -402,7 +402,7 @@ async fn test_usage_tracking_affects_ranking() {
     {
         let mut registry = tool_registry.write().await;
         for _ in 0..5 {
-            registry.usage.record_call("default", "server_a.tool_c");
+            registry.usage.record_call("default", "server_a/tool_c");
         }
     }
 
@@ -412,7 +412,7 @@ async fn test_usage_tracking_affects_ranking() {
         let scored = registry.select_tools(&[], "default", 2, &[], None);
 
         // tool_c should be in the top 2
-        let tool_c_found = scored.iter().any(|t| t.qualified_name == "server_a.tool_c");
+        let tool_c_found = scored.iter().any(|t| t.qualified_name == "server_a/tool_c");
         assert!(
             tool_c_found,
             "tool_c should be in top 2 due to usage tracking, got: {:?}",
@@ -438,7 +438,7 @@ async fn test_always_include_bypass() {
         for i in 1..=10 {
             search_tools.push(ToolEntry {
                 original_name: format!("search_tool_{}", i),
-                qualified_name: format!("server_a.search_tool_{}", i),
+                qualified_name: format!("server_a/search_tool_{}", i),
                 server_name: "server_a".to_string(),
                 description: Some(format!("Search tool {} for searching", i)),
                 input_schema: json!({}),
@@ -452,7 +452,7 @@ async fn test_always_include_bypass() {
         // Server X: maintenance tool (no search relevance)
         let maintenance_tools = vec![ToolEntry {
             original_name: "maintenance_tool".to_string(),
-            qualified_name: "server_x.maintenance_tool".to_string(),
+            qualified_name: "server_x/maintenance_tool".to_string(),
             server_name: "server_x".to_string(),
             description: Some("System maintenance admin tool".to_string()),
             input_schema: json!({}),
@@ -467,13 +467,13 @@ async fn test_always_include_bypass() {
     {
         let registry = tool_registry.read().await;
         let keywords = vec!["search".to_string()];
-        let always_include = vec!["server_x.maintenance_tool".to_string()];
+        let always_include = vec!["server_x/maintenance_tool".to_string()];
         let scored = registry.select_tools(&keywords, "default", 3, &always_include, None);
 
         // maintenance_tool should be in the result despite low relevance
         let maintenance_found = scored
             .iter()
-            .any(|t| t.qualified_name == "server_x.maintenance_tool");
+            .any(|t| t.qualified_name == "server_x/maintenance_tool");
         assert!(
             maintenance_found,
             "maintenance_tool should be in result due to always_include, got: {:?}",

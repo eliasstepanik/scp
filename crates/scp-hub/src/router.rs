@@ -276,7 +276,7 @@ impl Router {
                             let name = tool.get("name")?.as_str()?.to_string();
                             Some(ToolEntry {
                                 original_name: name.clone(),
-                                qualified_name: format!("{}.{}", server_name, name),
+                                qualified_name: format!("{}/{}", server_name, name),
                                 server_name: server_name.clone(),
                                 description: tool
                                     .get("description")
@@ -306,34 +306,21 @@ impl Router {
             }
         }
 
-        // Build the tools list using registry-aware names:
-        // - If a tool has no collision, the alias exists → use original (unqualified) name
-        // - If a tool has a collision, no alias exists → use qualified name so callers can route it
+        // Build the tools list — always expose the qualified name (server_name/tool_name)
+        // so clients can unambiguously route calls regardless of collision status.
         let mut all_tools: Vec<Value> = extension_tools;
-        {
-            let registry = self.tool_registry.read().await;
-            for (server_name, tools_array, _) in &backend_tools {
-                for tool in tools_array {
-                    let Some(original_name) = tool.get("name").and_then(|n| n.as_str()) else {
-                        continue;
-                    };
-                    let qualified_name = format!("{}.{}", server_name, original_name);
+        for (server_name, tools_array, _) in &backend_tools {
+            for tool in tools_array {
+                let Some(original_name) = tool.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                let qualified_name = format!("{}/{}", server_name, original_name);
 
-                    // Determine which name to expose: prefer the unqualified alias when it
-                    // resolves unambiguously to this server's tool; fall back to qualified.
-                    let exposed_name = match registry.lookup(original_name) {
-                        Some(entry) if entry.server_name == *server_name => {
-                            original_name.to_string()
-                        }
-                        _ => qualified_name,
-                    };
-
-                    let mut tool_obj = tool.clone();
-                    if let Some(obj) = tool_obj.as_object_mut() {
-                        obj.insert("name".to_string(), json!(exposed_name));
-                    }
-                    all_tools.push(tool_obj);
+                let mut tool_obj = tool.clone();
+                if let Some(obj) = tool_obj.as_object_mut() {
+                    obj.insert("name".to_string(), json!(qualified_name));
                 }
+                all_tools.push(tool_obj);
             }
         }
 
@@ -370,11 +357,14 @@ impl Router {
             }
         };
 
-        // If tool_name is dot-qualified (e.g. "memory-mcp.list_memories"), route directly
+        // If tool_name is slash-qualified (e.g. "memory-global/search_memory"), route directly
         // to the named server without a registry lookup.
-        if let Some(dot_pos) = tool_name.find('.') {
-            let server_name = tool_name[..dot_pos].to_string();
-            let actual_tool = tool_name[dot_pos + 1..].to_string();
+        // Also accept legacy dot-qualified form (e.g. "memory-global.search_memory") for
+        // backwards compatibility.
+        let slash_pos = tool_name.find('/').or_else(|| tool_name.find('.'));
+        if let Some(sep_pos) = slash_pos {
+            let server_name = tool_name[..sep_pos].to_string();
+            let actual_tool = tool_name[sep_pos + 1..].to_string();
 
             // Rewrite the "name" field in params to the unqualified tool name
             let mut new_params = request.params.clone().unwrap_or(serde_json::json!({}));
@@ -532,10 +522,19 @@ impl Router {
         match registry.lookup(&tool_name) {
             Some(tool_entry) => {
                 let server_name = tool_entry.server_name.clone();
+                let original_name = tool_entry.original_name.clone();
                 drop(registry);
 
+                // Rewrite the "name" field to the bare original_name before forwarding.
+                // The client may have sent a qualified name (e.g. "memory-global/search_memory")
+                // or a bare name (e.g. "search_memory"); the backend always expects the bare form.
+                let mut forwarded_params = request.params.clone().unwrap_or(json!({}));
+                if let Some(obj) = forwarded_params.as_object_mut() {
+                    obj.insert("name".to_string(), json!(original_name));
+                }
+
                 match self
-                    .call_backend(&server_name, "tools/call", request.params.clone())
+                    .call_backend(&server_name, "tools/call", Some(forwarded_params))
                     .await
                 {
                     Ok(response_body) => {
@@ -564,7 +563,7 @@ impl Router {
                     .all_tools()
                     .iter()
                     .take(10)
-                    .map(|e| e.original_name.clone())
+                    .map(|e| e.qualified_name.clone())
                     .collect();
                 drop(registry);
                 let hint = if total == 0 {
@@ -829,7 +828,7 @@ mod tests {
                 "test-server",
                 vec![ToolEntry {
                     original_name: "known_tool".to_string(),
-                    qualified_name: "test-server.known_tool".to_string(),
+                    qualified_name: "test-server/known_tool".to_string(),
                     server_name: "test-server".to_string(),
                     description: None,
                     input_schema: serde_json::json!({}),

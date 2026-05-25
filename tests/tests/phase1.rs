@@ -162,8 +162,8 @@ fn test_tool_registry_collision() {
     registry.register_tools("server2", vec![tool2]);
 
     // Qualified lookups should work
-    assert!(registry.lookup("server1.search").is_some());
-    assert!(registry.lookup("server2.search").is_some());
+    assert!(registry.lookup("server1/search").is_some());
+    assert!(registry.lookup("server2/search").is_some());
 
     // Unqualified lookup should fail (collision)
     assert!(registry.lookup("search").is_none());
@@ -192,7 +192,7 @@ fn test_budget_truncation() {
 
 #[test]
 fn test_strip_prefix() {
-    assert_eq!(ToolRegistry::strip_prefix("server.tool"), "tool");
+    assert_eq!(ToolRegistry::strip_prefix("server/tool"), "tool");
     assert_eq!(ToolRegistry::strip_prefix("tool"), "tool");
-    assert_eq!(ToolRegistry::strip_prefix("a.b.c"), "b.c");
+    assert_eq!(ToolRegistry::strip_prefix("a/b/c"), "b/c");
 }

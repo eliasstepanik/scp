@@ -28,7 +28,7 @@ pub enum RegistryError {
 pub struct ToolEntry {
     /// Original tool name from server
     pub original_name: String,
-    /// Qualified name (server_name.tool_name)
+    /// Qualified name (server_name/tool_name)
     pub qualified_name: String,
     /// Server that owns this tool
     pub server_name: String,
@@ -91,7 +91,7 @@ impl ToolRegistry {
 
         for mut tool in tools {
             let original_name = tool.original_name.clone();
-            let qualified_name = format!("{}.{}", server, original_name);
+            let qualified_name = format!("{}/{}", server, original_name);
 
             // Check for collision
             if let Some(existing_qualified) = self.aliases.get(&original_name) {
@@ -115,8 +115,9 @@ impl ToolRegistry {
                     .insert(original_name.clone(), qualified_name.clone());
             }
 
-            // Update qualified name
+            // Update qualified name and server name
             tool.qualified_name = qualified_name.clone();
+            tool.server_name = server.to_string();
 
             // Register the tool
             self.tools.insert(qualified_name.clone(), tool);
@@ -169,9 +170,9 @@ impl ToolRegistry {
             // If another server's tool now has no collision partner, restore its
             // unqualified alias so it can be looked up without a prefix again.
             for qualified_name in &tool_list {
-                // Derive original_name from the qualified_name format "server.original"
-                if let Some(dot) = qualified_name.find('.') {
-                    let original_name = &qualified_name[dot + 1..];
+                // Derive original_name from the qualified_name format "server/original"
+                if let Some(slash) = qualified_name.find('/') {
+                    let original_name = &qualified_name[slash + 1..];
                     // If no alias exists for this original name, check whether
                     // exactly one remaining server still provides it.
                     if !self.aliases.contains_key(original_name) {
@@ -180,7 +181,7 @@ impl ToolRegistry {
                             .values()
                             .flat_map(|tools| tools.iter())
                             .filter(|q| {
-                                q.find('.')
+                                q.find('/')
                                     .map(|d| &q[d + 1..] == original_name)
                                     .unwrap_or(false)
                             })
@@ -246,7 +247,7 @@ impl ToolRegistry {
 
     /// Strip server prefix from qualified name
     pub fn strip_prefix(qualified_name: &str) -> &str {
-        if let Some(pos) = qualified_name.find('.') {
+        if let Some(pos) = qualified_name.find('/') {
             &qualified_name[pos + 1..]
         } else {
             qualified_name
@@ -513,8 +514,8 @@ mod tests {
         assert_eq!(registry.server_count(), 1);
 
         // Check qualified lookup
-        assert!(registry.lookup("server1.search").is_some());
-        assert!(registry.lookup("server1.index").is_some());
+        assert!(registry.lookup("server1/search").is_some());
+        assert!(registry.lookup("server1/index").is_some());
 
         // Check unqualified lookup (no collision)
         assert!(registry.lookup("search").is_some());
@@ -532,8 +533,8 @@ mod tests {
         registry.register_tools("server2", tools2);
 
         // Both qualified names should exist
-        assert!(registry.lookup("server1.search").is_some());
-        assert!(registry.lookup("server2.search").is_some());
+        assert!(registry.lookup("server1/search").is_some());
+        assert!(registry.lookup("server2/search").is_some());
 
         // Unqualified lookup should fail (collision)
         assert!(registry.lookup("search").is_none());
@@ -556,9 +557,9 @@ mod tests {
 
     #[test]
     fn test_strip_prefix() {
-        assert_eq!(ToolRegistry::strip_prefix("server.tool"), "tool");
+        assert_eq!(ToolRegistry::strip_prefix("server/tool"), "tool");
         assert_eq!(ToolRegistry::strip_prefix("tool"), "tool");
-        assert_eq!(ToolRegistry::strip_prefix("a.b.c"), "b.c");
+        assert_eq!(ToolRegistry::strip_prefix("a/b/c"), "b/c");
     }
 
     #[test]
@@ -608,16 +609,16 @@ mod tests {
         registry.register_tools("server1", tools);
 
         // Record usage for tool1 and tool2 to make them rank higher than tool3
-        registry.usage.record_call("profile1", "server1.tool1");
-        registry.usage.record_call("profile1", "server1.tool2");
+        registry.usage.record_call("profile1", "server1/tool1");
+        registry.usage.record_call("profile1", "server1/tool2");
 
         let keywords = vec![];
         // tool3 has no usage and should not be in top 2
-        let always_include = vec!["server1.tool3".to_string()];
+        let always_include = vec!["server1/tool3".to_string()];
         let selected = registry.select_tools(&keywords, "profile1", 2, &always_include, None);
 
         // tool3 should be in the results
-        let has_tool3 = selected.iter().any(|t| t.qualified_name == "server1.tool3");
+        let has_tool3 = selected.iter().any(|t| t.qualified_name == "server1/tool3");
         assert!(
             has_tool3,
             "tool3 should be in results. Got: {:?}",
@@ -647,10 +648,10 @@ mod tests {
 
         // Verify old tools are gone and new ones are present
         assert_eq!(registry.tool_count(), 2);
-        assert!(registry.lookup("serverA.search").is_some());
-        assert!(registry.lookup("serverA.query").is_some());
-        assert!(registry.lookup("serverA.index").is_none());
-        assert!(registry.lookup("serverA.delete").is_none());
+        assert!(registry.lookup("serverA/search").is_some());
+        assert!(registry.lookup("serverA/query").is_some());
+        assert!(registry.lookup("serverA/index").is_none());
+        assert!(registry.lookup("serverA/delete").is_none());
 
         // Verify server tools list was updated
         let server_tools = registry.list_tools_for_server("serverA");
@@ -748,5 +749,87 @@ mod tests {
             3,
             "Should return exactly 3 tools when max=3"
         );
+    }
+
+    #[test]
+    fn test_qualified_names_are_prefixed_with_server() {
+        let mut registry = ToolRegistry::new();
+        let tools = vec![
+            create_test_tool("search_memory"),
+            create_test_tool("add_memory"),
+        ];
+        registry.register_tools("memory-global", tools);
+
+        let entry = registry.lookup("memory-global/search_memory").unwrap();
+        assert_eq!(entry.qualified_name, "memory-global/search_memory");
+        assert_eq!(entry.server_name, "memory-global");
+        assert_eq!(entry.original_name, "search_memory");
+
+        let entry2 = registry.lookup("memory-global/add_memory").unwrap();
+        assert_eq!(entry2.qualified_name, "memory-global/add_memory");
+    }
+
+    #[test]
+    fn test_bare_name_alias_works_when_no_collision() {
+        let mut registry = ToolRegistry::new();
+        let tools = vec![create_test_tool("search_memory")];
+        registry.register_tools("memory-global", tools);
+
+        // Bare name lookup should work when there is no collision
+        let entry = registry.lookup("search_memory");
+        assert!(
+            entry.is_some(),
+            "bare name lookup should succeed when no collision"
+        );
+        assert_eq!(entry.unwrap().qualified_name, "memory-global/search_memory");
+    }
+
+    #[test]
+    fn test_bare_name_alias_removed_on_collision() {
+        let mut registry = ToolRegistry::new();
+
+        let tools1 = vec![create_test_tool("search_memory")];
+        registry.register_tools("server-a", tools1);
+
+        let tools2 = vec![create_test_tool("search_memory")];
+        registry.register_tools("server-b", tools2);
+
+        // Both qualified names must exist
+        assert!(registry.lookup("server-a/search_memory").is_some());
+        assert!(registry.lookup("server-b/search_memory").is_some());
+
+        // Bare name must be removed due to collision
+        assert!(
+            registry.lookup("search_memory").is_none(),
+            "bare name lookup must fail when two servers have the same tool name"
+        );
+    }
+
+    #[test]
+    fn test_tools_list_returns_qualified_names() {
+        let mut registry = ToolRegistry::new();
+        let tools = vec![
+            create_test_tool("read_file"),
+            create_test_tool("write_file"),
+        ];
+        registry.register_tools("fs-server", tools);
+
+        let all = registry.all_tools();
+        for entry in &all {
+            assert!(
+                entry.qualified_name.starts_with("fs-server/"),
+                "qualified_name '{}' should start with 'fs-server/'",
+                entry.qualified_name
+            );
+            assert!(
+                entry.qualified_name.contains('/'),
+                "qualified_name should use '/' separator"
+            );
+        }
+
+        // Verify the exact qualified names
+        let names: Vec<&str> = all.iter().map(|e| e.qualified_name.as_str()).collect();
+        assert!(names.contains(&"fs-server/read_file"));
+        assert!(names.contains(&"fs-server/write_file"));
     }
 }

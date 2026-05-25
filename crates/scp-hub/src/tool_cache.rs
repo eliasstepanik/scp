@@ -81,7 +81,7 @@ mod tests {
         let mut cache = ToolCache::new(300);
         let tools = vec![ToolEntry {
             original_name: "test_tool".to_string(),
-            qualified_name: "server1.test_tool".to_string(),
+            qualified_name: "server1/test_tool".to_string(),
             server_name: "server1".to_string(),
             description: Some("Test tool".to_string()),
             input_schema: serde_json::json!({}),
@@ -104,7 +104,7 @@ mod tests {
         let mut cache = ToolCache::new(0); // 0 second TTL
         let tools = vec![ToolEntry {
             original_name: "test_tool".to_string(),
-            qualified_name: "server1.test_tool".to_string(),
+            qualified_name: "server1/test_tool".to_string(),
             server_name: "server1".to_string(),
             description: Some("Test tool".to_string()),
             input_schema: serde_json::json!({}),
@@ -127,7 +127,7 @@ mod tests {
         let mut cache = ToolCache::new(300);
         let tools = vec![ToolEntry {
             original_name: "test_tool".to_string(),
-            qualified_name: "server1.test_tool".to_string(),
+            qualified_name: "server1/test_tool".to_string(),
             server_name: "server1".to_string(),
             description: Some("Test tool".to_string()),
             input_schema: serde_json::json!({}),
@@ -148,7 +148,7 @@ mod tests {
         let mut cache = ToolCache::new(300); // 5 minute TTL
         let tools = vec![ToolEntry {
             original_name: "test_tool".to_string(),
-            qualified_name: "server1.test_tool".to_string(),
+            qualified_name: "server1/test_tool".to_string(),
             server_name: "server1".to_string(),
             description: Some("Test tool".to_string()),
             input_schema: serde_json::json!({}),
@@ -169,7 +169,7 @@ mod tests {
         let mut cache = ToolCache::new(300);
         let tools = vec![ToolEntry {
             original_name: "test_tool".to_string(),
-            qualified_name: "server1.test_tool".to_string(),
+            qualified_name: "server1/test_tool".to_string(),
             server_name: "server1".to_string(),
             description: Some("Test tool".to_string()),
             input_schema: serde_json::json!({}),
