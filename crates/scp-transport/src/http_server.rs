@@ -258,20 +258,51 @@ impl HttpServerTransport {
             .unwrap_or(false);
 
         if is_sse {
-            let text = response.text().await.map_err(|e| {
-                TransportError::ProcessError(format!("Failed to read SSE response: {}", e))
-            })?;
-            let json_str = text
-                .lines()
-                .find_map(|line| line.strip_prefix("data:"))
-                .map(|s| s.trim())
-                .ok_or_else(|| {
-                    TransportError::ProcessError("SSE response contained no data line".to_string())
-                })?;
-            let body: Value = serde_json::from_str(json_str).map_err(|e| {
-                TransportError::ProcessError(format!("Failed to parse SSE JSON: {}", e))
-            })?;
-            Ok(body)
+            use futures::StreamExt;
+            let mut stream = response.bytes_stream();
+            let mut buffer = String::new();
+
+            loop {
+                match stream.next().await {
+                    Some(Ok(chunk)) => {
+                        buffer.push_str(&String::from_utf8_lossy(&chunk));
+                        // Process all complete lines in the buffer.
+                        while let Some(newline_pos) = buffer.find('\n') {
+                            let line =
+                                buffer[..newline_pos].trim_end_matches('\r').to_string();
+                            buffer = buffer[newline_pos + 1..].to_string();
+                            if let Some(data) = line.strip_prefix("data:") {
+                                let data = data.trim();
+                                let body: Value =
+                                    serde_json::from_str(data).map_err(|e| {
+                                        TransportError::ProcessError(format!(
+                                            "SSE data JSON parse error: {}",
+                                            e
+                                        ))
+                                    })?;
+                                return Ok(body);
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        let mut chain = format!("{}", e);
+                        let mut src: Option<&dyn std::error::Error> = e.source();
+                        while let Some(s) = src {
+                            chain.push_str(&format!(" -> {}", s));
+                            src = s.source();
+                        }
+                        return Err(TransportError::ProcessError(format!(
+                            "SSE stream error: {}",
+                            chain
+                        )));
+                    }
+                    None => {
+                        return Err(TransportError::ProcessError(
+                            "SSE stream ended without data line".to_string(),
+                        ));
+                    }
+                }
+            }
         } else {
             let body: Value = response.json().await.map_err(|e| {
                 TransportError::ProcessError(format!("Failed to parse JSON response: {}", e))
