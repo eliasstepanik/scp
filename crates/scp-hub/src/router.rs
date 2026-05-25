@@ -50,6 +50,7 @@ pub struct Router {
 
 impl Router {
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     /// Create a new router
     pub fn new(
         pool_manager: Arc<PoolManager>,
@@ -341,8 +342,12 @@ impl Router {
         let cap = self.max_tools_exposed;
         let always_include_set: std::collections::HashSet<&str> =
             self.always_include.iter().map(|s| s.as_str()).collect();
-        let pinned_server_set: std::collections::HashSet<&str> =
-            self.exposure.pinned_servers.iter().map(|s| s.as_str()).collect();
+        let pinned_server_set: std::collections::HashSet<&str> = self
+            .exposure
+            .pinned_servers
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
 
         let mut exposed_backend_tools: Vec<Value> = Vec::new();
 
@@ -367,7 +372,11 @@ impl Router {
         // Pass 2: pinned server tools (skip any already added in pass 1)
         let already_added: std::collections::HashSet<String> = exposed_backend_tools
             .iter()
-            .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            .filter_map(|t| {
+                t.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
 
         'outer_pinned: for server_name in &self.exposure.pinned_servers {
@@ -401,15 +410,18 @@ impl Router {
         if pinned_server_set.is_empty() && always_include_set.is_empty() {
             let already_added_open: std::collections::HashSet<String> = exposed_backend_tools
                 .iter()
-                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .filter_map(|t| {
+                    t.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect();
             'outer_open: for (server_name, tools_array, _) in &backend_tools {
                 for tool in tools_array {
                     if exposed_backend_tools.len() >= cap {
                         break 'outer_open;
                     }
-                    let original_name =
-                        tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let qualified_name = format!("{}/{}", server_name, original_name);
                     if already_added_open.contains(&qualified_name) {
                         continue;
@@ -451,8 +463,12 @@ impl Router {
         let cap = self.max_tools_exposed;
         let always_include_set: std::collections::HashSet<&str> =
             self.always_include.iter().map(|s| s.as_str()).collect();
-        let pinned_server_set: std::collections::HashSet<&str> =
-            self.exposure.pinned_servers.iter().map(|s| s.as_str()).collect();
+        let pinned_server_set: std::collections::HashSet<&str> = self
+            .exposure
+            .pinned_servers
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
 
         let mut exposed: Vec<Value> = Vec::new();
 
@@ -477,7 +493,11 @@ impl Router {
         // Pass 2: pinned server tools
         let already_added: std::collections::HashSet<String> = exposed
             .iter()
-            .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            .filter_map(|t| {
+                t.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
 
         'outer_pinned: for server_name in &self.exposure.pinned_servers {
@@ -492,8 +512,7 @@ impl Router {
                     if exposed.len() >= cap {
                         break;
                     }
-                    let original_name =
-                        tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let qualified = format!("{}/{}", sn, original_name);
                     if already_added.contains(&qualified) {
                         continue;
@@ -511,15 +530,18 @@ impl Router {
         if pinned_server_set.is_empty() && always_include_set.is_empty() {
             let already_added_open: std::collections::HashSet<String> = exposed
                 .iter()
-                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .filter_map(|t| {
+                    t.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect();
             'outer_open: for (server_name, tools_array) in backend_tools {
                 for tool in tools_array {
                     if exposed.len() >= cap {
                         break 'outer_open;
                     }
-                    let original_name =
-                        tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let original_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let qualified = format!("{}/{}", server_name, original_name);
                     if already_added_open.contains(&qualified) {
                         continue;
@@ -724,8 +746,7 @@ impl Router {
                     "hint": "Use scp_search(query) to discover tools. Call any tool directly as 'server/tool_name' even if not in tools/list."
                 });
 
-                let text = serde_json::to_string(&info)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let text = serde_json::to_string(&info).unwrap_or_else(|_| "{}".to_string());
 
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
@@ -888,10 +909,9 @@ impl Router {
                         if search_returns_schema {
                             // input_schema is always a Value; include unless it's null
                             if !entry.input_schema.is_null() {
-                                obj.as_object_mut().unwrap().insert(
-                                    "inputSchema".to_string(),
-                                    entry.input_schema.clone(),
-                                );
+                                obj.as_object_mut()
+                                    .unwrap()
+                                    .insert("inputSchema".to_string(), entry.input_schema.clone());
                             }
                         }
                         obj
