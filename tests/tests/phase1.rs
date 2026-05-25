@@ -98,11 +98,20 @@ sharing = "shared"
 #[tokio::test]
 async fn test_pool_manager_add_server() {
     let manager = PoolManager::new();
+    // On Windows `echo` is a shell built-in; use `cmd /c echo` instead.
+    #[cfg(windows)]
+    let (command, args) = (
+        "cmd".to_string(),
+        vec!["/c".to_string(), "echo".to_string(), "hello".to_string()],
+    );
+    #[cfg(not(windows))]
+    let (command, args) = ("echo".to_string(), vec!["hello".to_string()]);
+
     let config = ServerConfig {
         name: "test".to_string(),
         transport: "stdio".to_string(),
-        command: Some("echo".to_string()),
-        args: vec![],
+        command: Some(command),
+        args,
         url: None,
         sharing: "shared".to_string(),
         pool_size: None,
