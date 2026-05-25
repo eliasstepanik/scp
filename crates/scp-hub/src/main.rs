@@ -7,6 +7,7 @@ mod reload;
 mod router;
 mod server_manager;
 mod session_store;
+mod streaming;
 mod tool_cache;
 mod tracing_setup;
 

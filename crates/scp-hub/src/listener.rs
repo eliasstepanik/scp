@@ -1,5 +1,6 @@
 use crate::router::Router;
 use crate::session_store::SessionStore;
+use crate::streaming::sse_response_from_json;
 use anyhow::Result;
 use axum::{
     extract::State,
@@ -7,7 +8,7 @@ use axum::{
     middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive},
-        Response, Sse,
+        IntoResponse, Response, Sse,
     },
     routing::{delete, get, post},
     Json, Router as AxumRouter,
@@ -215,7 +216,29 @@ async fn handle_post_mcp(
     State(state): State<ListenerState>,
     headers: HeaderMap,
     body: String,
-) -> Result<(StatusCode, HeaderMap, String), (StatusCode, String)> {
+) -> Response {
+    match handle_post_mcp_inner(state, headers, body).await {
+        Ok(resp) => resp,
+        Err((status, message)) => {
+            (status, Json(serde_json::json!({"error": message}))).into_response()
+        }
+    }
+}
+
+/// Inner implementation: returns `Ok(Response)` on success or `Err((StatusCode, String))` on
+/// failure. The outer function converts errors into JSON error responses.
+async fn handle_post_mcp_inner(
+    state: ListenerState,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Response, (StatusCode, String)> {
+    // Determine whether the client wants an SSE streaming response.
+    let wants_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/event-stream"))
+        .unwrap_or(false);
+
     // Generate correlation ID for this request
     let correlation_id = Uuid::new_v4().to_string();
 
@@ -294,24 +317,19 @@ async fn handle_post_mcp(
                 .as_secs();
             let retry_after = (60 - elapsed as u32).clamp(1, 60);
 
-            let mut error_headers = HeaderMap::new();
-            error_headers.insert(
-                "Retry-After",
-                retry_after.to_string().parse().map_err(|_| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Invalid retry-after header".to_string(),
-                    )
-                })?,
-            );
+            let mut error_resp = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({"error": "Rate limit exceeded"})),
+            )
+                .into_response();
+            if let Ok(hv) = retry_after.to_string().parse() {
+                error_resp.headers_mut().insert("Retry-After", hv);
+            }
 
             crate::metrics::SCP_ERRORS_TOTAL
                 .with_label_values(&["rate_limited"])
                 .inc();
-            return Err((
-                StatusCode::TOO_MANY_REQUESTS,
-                "Rate limit exceeded".to_string(),
-            ));
+            return Ok(error_resp);
         }
         rate_limit_remaining = session_locked.rate_limit_remaining;
         let now = SystemTime::now()
@@ -329,44 +347,21 @@ async fn handle_post_mcp(
 
     // Short-circuit notifications — return 202 with no routing (no WARN log)
     if let IncomingMessage::Notification(_) = &incoming {
-        let mut notif_headers = HeaderMap::new();
-        notif_headers.insert(
-            header::CONTENT_TYPE,
-            "application/json".parse().map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Invalid content type".to_string(),
-                )
-            })?,
-        );
-        notif_headers.insert(
-            "Mcp-Session-Id",
-            session_id.parse().map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Invalid session ID".to_string(),
-                )
-            })?,
-        );
-        notif_headers.insert(
-            "X-SCP-RateLimit-Remaining",
-            rate_limit_remaining.to_string().parse().map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Invalid rate limit remaining header".to_string(),
-                )
-            })?,
-        );
-        notif_headers.insert(
-            "X-SCP-RateLimit-Reset",
-            rate_limit_reset.to_string().parse().map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Invalid rate limit reset header".to_string(),
-                )
-            })?,
-        );
-        return Ok((StatusCode::ACCEPTED, notif_headers, String::new()));
+        let mut resp = (StatusCode::ACCEPTED, "").into_response();
+        let resp_headers = resp.headers_mut();
+        if let Ok(hv) = "application/json".parse() {
+            resp_headers.insert(header::CONTENT_TYPE, hv);
+        }
+        if let Ok(hv) = session_id.parse() {
+            resp_headers.insert("Mcp-Session-Id", hv);
+        }
+        if let Ok(hv) = rate_limit_remaining.to_string().parse() {
+            resp_headers.insert("X-SCP-RateLimit-Remaining", hv);
+        }
+        if let Ok(hv) = rate_limit_reset.to_string().parse() {
+            resp_headers.insert("X-SCP-RateLimit-Reset", hv);
+        }
+        return Ok(resp);
     }
 
     // Extract the request (we know it's not a Notification at this point)
@@ -388,68 +383,55 @@ async fn handle_post_mcp(
     // Push response to session's outbound channel
     if let Some(session) = state.session_store.get(&session_id).await {
         let session_locked = session.lock().unwrap_or_else(|e| e.into_inner());
-        let response_value = serde_json::to_value(&response).map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to serialize response".to_string(),
-            )
-        })?;
-        let _ = session_locked.outbound_tx.send(response_value);
+        if let Ok(response_value) = serde_json::to_value(&response) {
+            let _ = session_locked.outbound_tx.send(response_value);
+        }
     }
 
-    let mut response_headers = HeaderMap::new();
-    response_headers.insert(
-        header::CONTENT_TYPE,
-        "application/json".parse().map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Invalid content type".to_string(),
-            )
-        })?,
-    );
-    response_headers.insert(
-        "Mcp-Session-Id",
-        session_id.parse().map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Invalid session ID".to_string(),
-            )
-        })?,
-    );
-    response_headers.insert(
-        "X-SCP-RateLimit-Remaining",
-        rate_limit_remaining.to_string().parse().map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Invalid rate limit remaining header".to_string(),
-            )
-        })?,
-    );
-    response_headers.insert(
-        "X-SCP-RateLimit-Reset",
-        rate_limit_reset.to_string().parse().map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Invalid rate limit reset header".to_string(),
-            )
-        })?,
-    );
-
-    // Return 202 for notifications (no id field), 200 for requests
+    // Determine the HTTP status: 202 for responses without an id, 200 otherwise.
     let status = if response.id.is_none() {
         StatusCode::ACCEPTED
     } else {
         StatusCode::OK
     };
 
-    let response_body = serde_json::to_string(&response).map_err(|_| {
+    let response_json = serde_json::to_value(&response).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to serialize response".to_string(),
         )
     })?;
 
-    Ok((status, response_headers, response_body))
+    // Build the final HTTP response — SSE or plain JSON depending on Accept header.
+    let mut final_resp = if wants_sse {
+        sse_response_from_json(response_json)
+    } else {
+        let body_str = serde_json::to_string(&response).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to serialize response".to_string(),
+            )
+        })?;
+        let mut r = (status, body_str).into_response();
+        if let Ok(hv) = "application/json".parse() {
+            r.headers_mut().insert(header::CONTENT_TYPE, hv);
+        }
+        r
+    };
+
+    // Attach session / rate-limit headers to whichever response type we built.
+    let resp_headers = final_resp.headers_mut();
+    if let Ok(hv) = session_id.parse() {
+        resp_headers.insert("Mcp-Session-Id", hv);
+    }
+    if let Ok(hv) = rate_limit_remaining.to_string().parse() {
+        resp_headers.insert("X-SCP-RateLimit-Remaining", hv);
+    }
+    if let Ok(hv) = rate_limit_reset.to_string().parse() {
+        resp_headers.insert("X-SCP-RateLimit-Reset", hv);
+    }
+
+    Ok(final_resp)
 }
 
 /// GET /mcp — SSE stream for server-to-client messages
@@ -843,5 +825,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // -----------------------------------------------------------------------
+    // SSE content-negotiation tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a valid JSON-RPC tools/call body for the ping method.
+    fn ping_body() -> Body {
+        Body::from(
+            serde_json::to_string(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "ping",
+                "params": {}
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_without_accept_returns_json() {
+        let state = make_state(None);
+        let app = build_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("Content-Type", "application/json")
+                    .body(ping_body())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .expect("content-type header missing")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "Expected application/json, got: {ct}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_with_sse_accept_returns_sse() {
+        let state = make_state(None);
+        let app = build_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .body(ping_body())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .expect("content-type header missing")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("text/event-stream"),
+            "Expected text/event-stream, got: {ct}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sse_response_contains_valid_json_rpc_payload() {
+        use axum::body::to_bytes;
+
+        let state = make_state(None);
+        let app = build_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .body(ping_body())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_str = std::str::from_utf8(&bytes).unwrap();
+
+        // SSE format: lines starting with "data:" contain the payload
+        let data_line = body_str
+            .lines()
+            .find(|l| l.starts_with("data:"))
+            .expect("No data: line in SSE body");
+
+        let json_part = data_line.trim_start_matches("data:").trim();
+        let parsed: serde_json::Value =
+            serde_json::from_str(json_part).expect("SSE data is not valid JSON");
+
+        assert_eq!(
+            parsed["jsonrpc"], "2.0",
+            "jsonrpc field must be '2.0', got: {}",
+            parsed
+        );
     }
 }
