@@ -565,7 +565,9 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
         .unwrap_or("");
 
     assert!(
-        content_text.contains("test_tool") || content_text.contains("hello") || content_text.contains("http-backend/test_tool"),
+        content_text.contains("test_tool")
+            || content_text.contains("hello")
+            || content_text.contains("http-backend/test_tool"),
         "unexpected content from backend: {}",
         content_text
     );
