@@ -250,7 +250,13 @@ impl Router {
                 let request_timeout = config.timeouts.request_secs;
                 let sn = server_name.clone();
                 handles.push(tokio::spawn(async move {
-                    let mut transport = HttpServerTransport::new(url, headers, raw_url, connect_timeout, request_timeout);
+                    let mut transport = HttpServerTransport::new(
+                        url,
+                        headers,
+                        raw_url,
+                        connect_timeout,
+                        request_timeout,
+                    );
                     let req = json!({
                         "jsonrpc": "2.0",
                         "id": 1,

@@ -414,8 +414,13 @@ mod tests {
 
     #[test]
     fn test_http_server_transport_creation() {
-        let transport =
-            HttpServerTransport::new("http://localhost:8080".to_string(), HashMap::new(), false, 10, 30);
+        let transport = HttpServerTransport::new(
+            "http://localhost:8080".to_string(),
+            HashMap::new(),
+            false,
+            10,
+            30,
+        );
         // URL is normalised to always end with /mcp
         assert_eq!(transport.url, "http://localhost:8080/mcp");
         assert!(transport.session_id.is_none());
@@ -434,21 +439,36 @@ mod tests {
         assert_eq!(transport.url, "http://task-mcp:8081/mcp");
 
         // Base URL without /mcp also works
-        let transport2 =
-            HttpServerTransport::new("http://task-mcp:8081".to_string(), HashMap::new(), false, 10, 30);
+        let transport2 = HttpServerTransport::new(
+            "http://task-mcp:8081".to_string(),
+            HashMap::new(),
+            false,
+            10,
+            30,
+        );
         assert_eq!(transport2.url, "http://task-mcp:8081/mcp");
     }
 
     #[test]
     fn test_http_server_transport_raw_url() {
         // raw_url = true: URL used as-is, no /mcp appended
-        let transport =
-            HttpServerTransport::new("https://mcp.grep.app/".to_string(), HashMap::new(), true, 10, 30);
+        let transport = HttpServerTransport::new(
+            "https://mcp.grep.app/".to_string(),
+            HashMap::new(),
+            true,
+            10,
+            30,
+        );
         assert_eq!(transport.url, "https://mcp.grep.app/");
 
         // raw_url = true even when URL already ends with /mcp — not stripped either
-        let transport2 =
-            HttpServerTransport::new("https://example.com/mcp".to_string(), HashMap::new(), true, 10, 30);
+        let transport2 = HttpServerTransport::new(
+            "https://example.com/mcp".to_string(),
+            HashMap::new(),
+            true,
+            10,
+            30,
+        );
         assert_eq!(transport2.url, "https://example.com/mcp");
     }
 }
