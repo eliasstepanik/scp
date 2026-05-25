@@ -1,4 +1,3 @@
-use chrono;
 use scp_core::config::FilterConfig;
 use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_hub::router::Router;

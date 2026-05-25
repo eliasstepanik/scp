@@ -450,8 +450,8 @@ async fn test_streamable_http_backend_tools_appear_in_list() {
         .collect();
 
     assert!(
-        tool_names.contains(&"test_tool"),
-        "test_tool not found in tools/list; got: {:?}",
+        tool_names.contains(&"http-backend/test_tool"),
+        "http-backend/test_tool not found in tools/list; got: {:?}",
         tool_names
     );
 
@@ -497,7 +497,7 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
         .await
         .expect("initialize");
 
-    // Confirm test_tool appears in tools/list.
+    // Confirm test_tool appears in tools/list (namespaced as http-backend/test_tool).
     let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
     let list_resp = client
         .post(&mcp_url)
@@ -519,8 +519,8 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
         .unwrap_or_default();
 
     assert!(
-        tool_names.contains(&"test_tool"),
-        "test_tool not available for call; list: {:?}",
+        tool_names.contains(&"http-backend/test_tool"),
+        "http-backend/test_tool not available for call; list: {:?}",
         tool_names
     );
 
@@ -565,7 +565,7 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
         .unwrap_or("");
 
     assert!(
-        content_text.contains("test_tool") || content_text.contains("hello"),
+        content_text.contains("test_tool") || content_text.contains("hello") || content_text.contains("http-backend/test_tool"),
         "unexpected content from backend: {}",
         content_text
     );
