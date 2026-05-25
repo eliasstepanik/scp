@@ -208,7 +208,7 @@ pub struct ServerConfig {
     pub timeouts: TimeoutConfig,
     #[serde(default)]
     pub retries: RetryConfig,
-    #[serde(default)]
+    #[serde(default, alias = "environment")]
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
