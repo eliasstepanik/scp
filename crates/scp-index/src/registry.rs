@@ -309,10 +309,7 @@ impl ToolRegistry {
             .tools
             .values()
             .map(|entry| {
-                let name_tokens = entry
-                    .original_name
-                    .replace('_', " ")
-                    .replace('-', " ");
+                let name_tokens = entry.original_name.replace(['_', '-'], " ");
                 let text = format!(
                     "{} {} {}",
                     name_tokens,

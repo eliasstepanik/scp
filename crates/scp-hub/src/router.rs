@@ -36,6 +36,7 @@ pub struct Router {
     tool_registry: Arc<RwLock<ToolRegistry>>,
     fanout_timeout_secs: u64,
     request_token_budget: usize,
+    max_response_size_bytes: Option<usize>,
 }
 
 impl Router {
@@ -52,7 +53,15 @@ impl Router {
             tool_registry,
             fanout_timeout_secs,
             request_token_budget,
+            max_response_size_bytes: Some(1_048_576),
         }
+    }
+
+    #[allow(dead_code)]
+    /// Create a new router with a custom response size limit
+    pub fn with_max_response_size(mut self, max_response_size_bytes: Option<usize>) -> Self {
+        self.max_response_size_bytes = max_response_size_bytes;
+        self
     }
 
     /// Perform an eager tools/list fanout to populate the registry.
@@ -577,6 +586,50 @@ impl Router {
         }
     }
 
+    /// Truncate the `content[0].text` field of a JSON-RPC result if the serialized
+    /// response exceeds `limit` bytes. Appends a notice with the actual and limit sizes.
+    fn maybe_truncate_response(&self, mut response: Value) -> Value {
+        let limit = match self.max_response_size_bytes {
+            Some(l) => l,
+            None => return response,
+        };
+
+        let serialized_len = response.to_string().len();
+        if serialized_len <= limit {
+            return response;
+        }
+
+        // Navigate to result.content[0].text and truncate it
+        if let Some(result) = response.get_mut("result") {
+            if let Some(content) = result.get_mut("content") {
+                if let Some(first) = content.get_mut(0) {
+                    if let Some(text) = first.get_mut("text") {
+                        if let Some(s) = text.as_str() {
+                            let notice = format!(
+                                "\n\n[Response truncated: {} bytes exceeded {} bytes limit]",
+                                serialized_len, limit
+                            );
+                            // Keep as many bytes of the original text as we can fit
+                            let keep = limit.saturating_sub(notice.len());
+                            let truncated = if keep < s.len() {
+                                let mut t = s[..keep].to_string();
+                                t.push_str(&notice);
+                                t
+                            } else {
+                                let mut t = s.to_string();
+                                t.push_str(&notice);
+                                t
+                            };
+                            *text = json!(truncated);
+                        }
+                    }
+                }
+            }
+        }
+
+        response
+    }
+
     /// Route a request to a specific backend server (HTTP or stdio).
     async fn call_backend(
         &self,
@@ -611,7 +664,7 @@ impl Router {
             })?
             .map_err(|e| RouterError::PoolError(e.to_string()))?;
 
-            Ok(response)
+            Ok(self.maybe_truncate_response(response))
         } else if config.command.is_some() {
             // stdio backend — use shared pool
             let pool = self
@@ -631,7 +684,7 @@ impl Router {
             .map_err(|e| RouterError::PoolError(e.to_string()))?;
 
             // Wrap result to match HTTP response shape expected by callers
-            Ok(json!({ "result": result }))
+            Ok(self.maybe_truncate_response(json!({ "result": result })))
         } else {
             Err(RouterError::PoolError(format!(
                 "Server {} has no url and no command",
@@ -800,6 +853,62 @@ mod tests {
         assert!(
             msg.contains("known_tool"),
             "Expected sample tool name in: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_response_truncated_when_exceeds_limit() {
+        let pool_manager = Arc::new(PoolManager::new());
+        let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let router =
+            Router::new(pool_manager, tool_registry, 5, 4000).with_max_response_size(Some(100));
+
+        // Build a response whose JSON serialization clearly exceeds 100 bytes
+        let large_text = "x".repeat(200);
+        let response = serde_json::json!({
+            "result": {
+                "content": [{"type": "text", "text": large_text}]
+            }
+        });
+
+        let truncated = router.maybe_truncate_response(response);
+        let text = truncated["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text field missing");
+
+        assert!(
+            text.contains("[Response truncated:"),
+            "Expected truncation notice, got: {text}"
+        );
+        assert!(
+            truncated.to_string().len() < 200 + 300,
+            "Response should be significantly smaller than original"
+        );
+    }
+
+    #[test]
+    fn test_response_not_truncated_when_under_limit() {
+        let pool_manager = Arc::new(PoolManager::new());
+        let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let router = Router::new(pool_manager, tool_registry, 5, 4000)
+            .with_max_response_size(Some(1_048_576));
+
+        let small_text = "hello world";
+        let response = serde_json::json!({
+            "result": {
+                "content": [{"type": "text", "text": small_text}]
+            }
+        });
+
+        let result = router.maybe_truncate_response(response);
+        let text = result["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text field missing");
+
+        assert_eq!(text, small_text, "Small response must not be truncated");
+        assert!(
+            !text.contains("[Response truncated:"),
+            "No truncation notice expected"
         );
     }
 }

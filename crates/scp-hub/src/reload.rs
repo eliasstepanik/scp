@@ -193,6 +193,7 @@ mod tests {
                     burst_size: 20,
                 },
                 auth: None,
+                max_response_size_bytes: Some(1_048_576),
             },
             servers,
             filter: Default::default(),

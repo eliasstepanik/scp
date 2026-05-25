@@ -61,6 +61,13 @@ pub struct HubConfig {
     pub defaults: HubDefaults,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
+    /// Maximum response size in bytes before truncation. Default: 1 MiB.
+    #[serde(default = "default_max_response_size_bytes")]
+    pub max_response_size_bytes: Option<usize>,
+}
+
+fn default_max_response_size_bytes() -> Option<usize> {
+    Some(1_048_576)
 }
 
 fn default_listen_address() -> String {
