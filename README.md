@@ -2,7 +2,7 @@
 
 [![Build Status](https://github.com/eliasstepanik/scp/actions/workflows/ci.yml/badge.svg)](https://github.com/eliasstepanik/scp/actions)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/eliasstepanik/scp#license)
-[![Version](https://img.shields.io/badge/version-1.0-brightgreen.svg)](https://github.com/eliasstepanik/scp/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0-brightgreen.svg)](https://github.com/eliasstepanik/scp/releases)
 [![Status](https://img.shields.io/badge/status-Production%20Ready-brightgreen.svg)](#status)
 
 **MCP-compatible proxy hub that intelligently filters tool responses to stay within LLM context window budgets.**
@@ -123,6 +123,32 @@ EOF
 ```bash
 curl http://localhost:3101/health
 ```
+
+---
+
+### Docker
+
+A pre-built Docker image is published to GitHub Container Registry on every push to `master`:
+
+```bash
+docker pull ghcr.io/eliasstepanik/scp:latest
+```
+
+Example `docker-compose.yml`:
+
+```yaml
+services:
+  scp-hub:
+    image: ghcr.io/eliasstepanik/scp:latest
+    ports:
+      - "3100:3100"
+      - "3101:3101"
+    volumes:
+      - ./config:/etc/scp:ro
+    restart: unless-stopped
+```
+
+Mount your `scp.toml` at `/etc/scp/scp.toml`.
 
 ---
 
@@ -312,7 +338,7 @@ SCP follows a 7-phase roadmap. All phases are complete:
 | 4 | v0.5 | Full filter pipeline | ✅ Complete |
 | 5 | v0.6 | Embedding scorer, progressive disclosure | ✅ Complete |
 | 6 | v0.7 | Full admin API, Prometheus, OTLP tracing | ✅ Complete |
-| 7 | v1.0 | Production hardening, docs | ✅ Complete |
+| 7 | v1.0 | Production hardening, docs, memory safety | ✅ Complete |
 
 ---
 
@@ -384,6 +410,19 @@ SCP is organized as a Rust Cargo workspace with 7 crates:
 4. **Response received** → Filter pipeline processes (8 stages)
 5. **Response sent** → Delivery logger records, budget updated
 6. **Client disconnects** → Session cleaned up
+
+---
+
+## Changelog
+
+### v0.2.0 (2026-05-25)
+- Fix: HTTP backend connections now use correct default timeouts (10s connect / 30s request) when `[servers.timeouts]` is absent from config
+- Fix: SSE responses are now streamed line-by-line instead of buffering the full stream (prevents timeouts on long-lived SSE connections)
+- Fix: `[servers.environment]` is now accepted as an alias for `[servers.env]` in server config
+- Fix: Eliminated 50GB RAM spike caused by unbound chunk cache — sessions now cap cached content at 10MB
+- Fix: Transient sessions for headerless clients are cleaned up immediately after request completes
+- Feat: Periodic tool re-discovery every 60s heals startup races and backend restarts
+- Feat: Full error chain logged on backend connection failures
 
 ---
 
