@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Router error types
 #[derive(Debug, Error)]
@@ -53,6 +53,33 @@ impl Router {
             fanout_timeout_secs,
             request_token_budget,
         }
+    }
+
+    /// Perform an eager tools/list fanout to populate the registry.
+    ///
+    /// Returns `(tool_count, server_count)` where `server_count` is the number of
+    /// backends that responded successfully. Servers that are not yet warm are
+    /// skipped; errors from individual backends are logged but do not fail the call.
+    pub async fn discover_tools(&self) -> (usize, usize) {
+        let dummy_req = JsonRpcRequest::new(RequestId::Null, "tools/list".to_string(), None);
+        let response = self.handle_tools_list(&dummy_req).await;
+
+        // Count the tools and servers from the now-updated registry
+        let registry = self.tool_registry.read().await;
+        let tool_count = registry.tool_count();
+        let server_count = registry.server_count();
+
+        if let Some(result) = response.result {
+            // Log at debug level in case callers want the raw response
+            debug!("Eager tools/list fanout result: {}", result);
+        }
+
+        info!(
+            "Eager tool discovery complete: {} tools registered from {} servers",
+            tool_count, server_count
+        );
+
+        (tool_count, server_count)
     }
 
     /// Route a request to the appropriate backend

@@ -212,6 +212,16 @@ async fn main() -> Result<()> {
 
     info!("SCP Hub started successfully");
 
+    // Eager tool discovery: fire a tools/list fanout in the background so the
+    // registry is warm before the first client request arrives.
+    {
+        let router_clone = router.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            router_clone.discover_tools().await;
+        });
+    }
+
     // Wait for shutdown signal
     shutdown_signal().await;
 
