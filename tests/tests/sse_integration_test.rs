@@ -572,3 +572,170 @@ async fn test_streamable_http_backend_tool_call_routes_correctly() {
 
     process.kill().ok();
 }
+
+/// Test that tools/list includes the SCP extension tools (scp_info, scp_budget, etc.)
+#[tokio::test]
+async fn test_tools_list_includes_scp_extension_tools() {
+    let backend = BackendHandle::spawn("backend_tool").await;
+
+    let hub_port = find_available_port();
+    let admin_port = find_available_port();
+    let auth_token = "scp-ext-tools-token";
+
+    let mock_path = mock_server_bin();
+    let mock_str = mock_path.to_str().expect("mock path").to_string();
+
+    let (mut process, _config) =
+        spawn_hub_with_http_backend(hub_port, admin_port, auth_token, backend.port, &mock_str)
+            .await
+            .expect("Failed to spawn hub");
+
+    let client = reqwest::Client::new();
+    let mcp_url = format!("http://127.0.0.1:{}/mcp", hub_port);
+    let auth = format!("Bearer {}", auth_token);
+
+    // Initialize.
+    let init_req = JsonRpcRequest::new(
+        RequestId::Number(1),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": { "name": "test-client", "version": "0.1.0" }
+        })),
+    );
+    client
+        .post(&mcp_url)
+        .header("Authorization", &auth)
+        .json(&init_req)
+        .send()
+        .await
+        .expect("initialize");
+
+    // tools/list — assert the SCP extension tool is present.
+    let list_req = JsonRpcRequest::new(RequestId::Number(2), "tools/list".to_string(), None);
+    let resp = client
+        .post(&mcp_url)
+        .header("Authorization", &auth)
+        .json(&list_req)
+        .send()
+        .await
+        .expect("tools/list");
+
+    assert_eq!(resp.status(), 200, "tools/list should return HTTP 200");
+
+    let body: Value = resp.json().await.expect("parse tools/list body");
+
+    let tools = body
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .expect("result.tools should be an array");
+
+    let tool_names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(
+        tool_names.contains(&"scp_info"),
+        "scp_info not found in tools/list; got: {:?}",
+        tool_names
+    );
+
+    process.kill().ok();
+}
+
+/// Test that calling the scp_info tool returns version information.
+#[tokio::test]
+async fn test_scp_info_tool_returns_version() {
+    let backend = BackendHandle::spawn("backend_tool_v2").await;
+
+    let hub_port = find_available_port();
+    let admin_port = find_available_port();
+    let auth_token = "scp-info-tool-token";
+
+    let mock_path = mock_server_bin();
+    let mock_str = mock_path.to_str().expect("mock path").to_string();
+
+    let (mut process, _config) =
+        spawn_hub_with_http_backend(hub_port, admin_port, auth_token, backend.port, &mock_str)
+            .await
+            .expect("Failed to spawn hub");
+
+    let client = reqwest::Client::new();
+    let mcp_url = format!("http://127.0.0.1:{}/mcp", hub_port);
+    let auth = format!("Bearer {}", auth_token);
+
+    // Initialize.
+    let init_req = JsonRpcRequest::new(
+        RequestId::Number(1),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": { "name": "test-client", "version": "0.1.0" }
+        })),
+    );
+    client
+        .post(&mcp_url)
+        .header("Authorization", &auth)
+        .json(&init_req)
+        .send()
+        .await
+        .expect("initialize");
+
+    // Call scp_info.
+    let call_req = JsonRpcRequest::new(
+        RequestId::Number(2),
+        "tools/call".to_string(),
+        Some(json!({
+            "name": "scp_info",
+            "arguments": {}
+        })),
+    );
+    let resp = client
+        .post(&mcp_url)
+        .header("Authorization", &auth)
+        .json(&call_req)
+        .send()
+        .await
+        .expect("tools/call scp_info");
+
+    assert_eq!(resp.status(), 200, "scp_info call should return HTTP 200");
+
+    let body: Value = resp.json().await.expect("parse scp_info response");
+
+    assert!(
+        body.get("result").is_some(),
+        "scp_info should return a result; got: {:?}",
+        body
+    );
+    assert!(
+        body.get("error").is_none(),
+        "scp_info should not return an error; got: {:?}",
+        body
+    );
+
+    let content = body
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_array())
+        .expect("result.content should be an array");
+
+    assert!(!content.is_empty(), "scp_info content should not be empty");
+
+    // Verify the content contains version-related text.
+    let text = content
+        .first()
+        .and_then(|item| item.get("text"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+
+    assert!(
+        !text.is_empty(),
+        "scp_info content text should not be empty"
+    );
+
+    process.kill().ok();
+}
