@@ -223,7 +223,7 @@ fn default_enabled() -> bool {
 }
 
 /// Timeout configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeoutConfig {
     #[serde(default = "default_connect_secs")]
     pub connect_secs: u64,
@@ -231,6 +231,16 @@ pub struct TimeoutConfig {
     pub request_secs: u64,
     #[serde(default = "default_health_check_secs")]
     pub health_check_secs: u64,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_secs: default_connect_secs(),
+            request_secs: default_request_secs(),
+            health_check_secs: default_health_check_secs(),
+        }
+    }
 }
 
 fn default_connect_secs() -> u64 {
