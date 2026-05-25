@@ -216,7 +216,7 @@ async fn test_pipeline_dropped_chunks_land_in_session() {
     let filter_result = pipeline.run(&content_value, &ctx).await;
 
     assert!(
-        filter_result.dropped_chunks.len() > 0,
+        !filter_result.dropped_chunks.is_empty(),
         "Expected dropped chunks with 50-token budget on ~1200-token content, got 0 dropped; \
          chunks_total={}, chunks_shown={}",
         filter_result.chunks_total,
