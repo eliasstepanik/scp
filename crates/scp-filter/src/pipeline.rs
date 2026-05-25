@@ -9,7 +9,6 @@ use crate::progressive::ProgressiveDisclosureAnnotator;
 use crate::relevance::RelevanceScorer;
 use crate::token_count::count_tokens;
 use serde_json::Value;
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 /// Context passed to the pipeline for each tool call
@@ -170,10 +169,8 @@ impl FilterPipeline {
             RelevanceScorer::score_chunks(&mut chunks, &query_terms);
         }
 
-        // Stage 6: BudgetEnforcer
-        // Clone chunks before consuming them so we can compute dropped chunks
-        let all_chunks_backup = chunks.clone();
-        let (selected_chunks, total_count) =
+        // Stage 6: BudgetEnforcer — one-pass: selected, dropped, total returned directly
+        let (selected_chunks, dropped_chunks, total_count) =
             BudgetEnforcer::select_chunks(chunks, ctx.budget_tokens, 200);
 
         // If no chunks selected, return empty
@@ -188,13 +185,6 @@ impl FilterPipeline {
                 dropped_chunks: vec![],
             };
         }
-
-        // Compute dropped chunks: those in all_chunks_backup not in selected_chunks
-        let selected_indices: HashSet<usize> = selected_chunks.iter().map(|c| c.index).collect();
-        let dropped_chunks: Vec<Chunk> = all_chunks_backup
-            .into_iter()
-            .filter(|c| !selected_indices.contains(&c.index))
-            .collect();
 
         // Stage 7: ProgressiveDisclosureAnnotator
         let assembled = BudgetEnforcer::reassemble(&selected_chunks);

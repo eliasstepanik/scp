@@ -1678,6 +1678,7 @@ dependencies = [
 name = "scp-pool"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "once_cell",
  "prometheus",
  "scp-core",

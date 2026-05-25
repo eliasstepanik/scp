@@ -16,6 +16,12 @@ pub enum CircuitState {
     HalfOpen,
 }
 
+// TODO(circuit-breaker): Wire this into the PoolManager call path.
+// Currently this struct is fully implemented but has zero callers.
+// See manager.rs for the integration point — check is_open() before
+// dispatching to SharedPool::call(), and call call_failed()/call_succeeded()
+// based on the result.
+
 /// Circuit breaker for fault tolerance.
 ///
 /// Implements the circuit breaker pattern to prevent cascading failures

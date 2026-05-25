@@ -277,6 +277,11 @@ async fn handle_post_mcp_inner(
         (4000, 60)
     };
 
+    // Track whether this is a transient (headerless) session that should be cleaned up after
+    // the request completes, to avoid persistent allocations for clients that don't send
+    // Mcp-Session-Id.
+    let is_transient = !headers.contains_key("Mcp-Session-Id");
+
     // Get or create session — if a session ID is provided but not found, create a new one
     // transparently so that reconnecting clients don't receive 404 errors.
     let session_id = if let Some(session_id_header) = headers.get("Mcp-Session-Id") {
@@ -440,6 +445,12 @@ async fn handle_post_mcp_inner(
     }
     if let Ok(hv) = rate_limit_reset.to_string().parse() {
         resp_headers.insert("X-SCP-RateLimit-Reset", hv);
+    }
+
+    // Remove transient sessions that were created for headerless clients — they have
+    // no persistent identity, so holding their allocations past this request is waste.
+    if is_transient {
+        state.session_store.remove(&session_id).await;
     }
 
     Ok(final_resp)

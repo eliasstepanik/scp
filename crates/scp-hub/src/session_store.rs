@@ -101,6 +101,8 @@ pub struct Session {
     pub chunk_cache: HashMap<String, Vec<scp_filter::chunker::Chunk>>,
     /// Order of chunk cache entries for LRU eviction.
     pub chunk_cache_order: VecDeque<String>,
+    /// Total byte size of all cached chunk text (used for 10MB cap enforcement).
+    pub chunk_cache_bytes: usize,
 }
 
 #[allow(dead_code)]
@@ -143,6 +145,7 @@ impl Session {
             delivery_log: Arc::new(Mutex::new(DeliveryLog::new(10_000))),
             chunk_cache: HashMap::new(),
             chunk_cache_order: VecDeque::new(),
+            chunk_cache_bytes: 0,
         }
     }
 
@@ -189,15 +192,37 @@ impl Session {
         self.call_history.push_back(record);
     }
 
-    /// Store chunks for a request with LRU eviction
+    /// Store chunks for a request with LRU eviction (count cap: 50, byte cap: 10MB).
     #[allow(dead_code)]
     pub fn store_chunks(&mut self, request_id: String, chunks: Vec<scp_filter::chunker::Chunk>) {
         const MAX_CACHE: usize = 50;
-        if self.chunk_cache.len() >= MAX_CACHE {
+        const MAX_CACHE_BYTES: usize = 10 * 1024 * 1024; // 10MB
+
+        let new_bytes: usize = chunks.iter().map(|c| c.text.len()).sum();
+
+        // Evict by bytes
+        while self.chunk_cache_bytes + new_bytes > MAX_CACHE_BYTES
+            && !self.chunk_cache_order.is_empty()
+        {
             if let Some(oldest) = self.chunk_cache_order.pop_front() {
-                self.chunk_cache.remove(&oldest);
+                if let Some(evicted) = self.chunk_cache.remove(&oldest) {
+                    self.chunk_cache_bytes = self.chunk_cache_bytes
+                        .saturating_sub(evicted.iter().map(|c| c.text.len()).sum::<usize>());
+                }
             }
         }
+
+        // Evict by count
+        while self.chunk_cache.len() >= MAX_CACHE && !self.chunk_cache_order.is_empty() {
+            if let Some(oldest) = self.chunk_cache_order.pop_front() {
+                if let Some(evicted) = self.chunk_cache.remove(&oldest) {
+                    self.chunk_cache_bytes = self.chunk_cache_bytes
+                        .saturating_sub(evicted.iter().map(|c| c.text.len()).sum::<usize>());
+                }
+            }
+        }
+
+        self.chunk_cache_bytes += new_bytes;
         self.chunk_cache_order.push_back(request_id.clone());
         self.chunk_cache.insert(request_id, chunks);
     }

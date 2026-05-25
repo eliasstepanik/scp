@@ -1,6 +1,7 @@
 use crate::lifecycle::{LifecycleInfo, ServerState};
 use crate::metrics::{SCP_POOL_ACTIVE_PROCESSES, SCP_POOL_SPAWNS_TOTAL};
 use crate::shared::SharedPool;
+use futures::FutureExt;
 use scp_core::config::ServerConfig;
 use scp_transport::stdio_server::StdioServerTransport;
 use std::collections::HashMap;
@@ -182,125 +183,176 @@ impl PoolManager {
                     let env_for_loop = env.clone();
                     let state_for_loop = state_arc.clone();
 
-                    let receive_handle = tokio::spawn(async move {
-                        const MAX_RETRIES: u32 = 5;
-                        let mut current_pool = pool;
-                        // Wrap in Option so we can move it into receive_loop each
-                        // iteration and replenish it after a successful respawn.
-                        let mut current_receiver = Some(receiver);
+                    // Clone retry config before moving into spawn
+                    let retry_cfg = config.retries.clone();
 
-                        loop {
-                            // Take the receiver — it is moved into receive_loop so
-                            // the loop holds no lock while awaiting stdout.
-                            let recv = match current_receiver.take() {
-                                Some(r) => r,
-                                None => {
-                                    error!(
-                                        "receive_loop for '{}': no receiver available",
-                                        name_for_loop
-                                    );
-                                    break;
-                                }
-                            };
+                    let name_outer = name_for_loop.clone();
+                    let state_outer = state_for_loop.clone();
 
-                            if let Err(e) = current_pool.receive_loop(recv, &name_for_loop).await {
-                                error!("receive_loop for '{}' exited: {}", name_for_loop, e);
-                            }
+                    let receive_handle = tokio::spawn(
+                        std::panic::AssertUnwindSafe(async move {
+                            let max_retries = retry_cfg.max_attempts;
+                            let mut current_pool = pool;
+                            // Wrap in Option so we can move it into receive_loop each
+                            // iteration and replenish it after a successful respawn.
+                            let mut current_receiver = Some(receiver);
 
-                            // Check if the server has been administratively disabled/removed
-                            {
-                                let servers = servers_for_loop.read().await;
-                                if let Some(entry) = servers.get(&name_for_loop) {
-                                    let state = entry.state.read().await;
-                                    if matches!(
-                                        state.state,
-                                        ServerState::Disabled | ServerState::Draining
-                                    ) {
-                                        // Intentional stop — do not retry
-                                        break;
-                                    }
-                                } else {
-                                    // Server was removed
-                                    break;
-                                }
-                            }
-
-                            // Attempt crash recovery with exponential backoff
-                            let mut restarted = false;
-                            for attempt in 1..=MAX_RETRIES {
-                                let backoff = Duration::from_secs(1u64 << (attempt - 1)); // 1,2,4,8,16
-                                warn!(
-                                    "Server '{}' crashed; retry {}/{} in {:?}",
-                                    name_for_loop, attempt, MAX_RETRIES, backoff
-                                );
-                                tokio::time::sleep(backoff).await;
-
-                                let args_ref: Vec<&str> =
-                                    args_for_loop.iter().map(|s| s.as_str()).collect();
-
-                                match StdioServerTransport::spawn(
-                                    &command_for_loop,
-                                    &args_ref,
-                                    &env_for_loop,
-                                )
-                                .await
-                                {
-                                    Ok(new_transport) => {
-                                        SCP_POOL_SPAWNS_TOTAL
-                                            .with_label_values(&[&name_for_loop])
-                                            .inc();
-                                        SCP_POOL_ACTIVE_PROCESSES
-                                            .with_label_values(&[&name_for_loop])
-                                            .set(1.0);
-
-                                        let (new_pool, new_receiver) =
-                                            SharedPool::new(new_transport);
-                                        let new_pool = Arc::new(new_pool);
-
-                                        // Update entry with fresh pool
-                                        {
-                                            let mut servers = servers_for_loop.write().await;
-                                            if let Some(entry) = servers.get_mut(&name_for_loop) {
-                                                entry.pool = Some(new_pool.clone());
-                                            }
-                                        }
-
-                                        // Restore Warm state
-                                        {
-                                            let mut state = state_for_loop.write().await;
-                                            state.transition_to(ServerState::Warm);
-                                        }
-
-                                        info!(
-                                            "Server '{}' restarted after crash (attempt {})",
-                                            name_for_loop, attempt
-                                        );
-
-                                        current_pool = new_pool;
-                                        current_receiver = Some(new_receiver);
-                                        restarted = true;
-                                        break;
-                                    }
-                                    Err(e) => {
+                            loop {
+                                // Take the receiver — it is moved into receive_loop so
+                                // the loop holds no lock while awaiting stdout.
+                                let recv = match current_receiver.take() {
+                                    Some(r) => r,
+                                    None => {
                                         error!(
-                                            "Failed to respawn '{}' (attempt {}): {}",
-                                            name_for_loop, attempt, e
+                                            server = %name_for_loop,
+                                            "receive_loop: no receiver available"
                                         );
+                                        break;
+                                    }
+                                };
+
+                                if let Err(e) = current_pool.receive_loop(recv, &name_for_loop).await {
+                                    error!(server = %name_for_loop, "receive_loop exited: {}", e);
+                                }
+
+                                // Record the crash against the lifecycle state
+                                {
+                                    let mut state = state_for_loop.write().await;
+                                    state.record_failure("receive_loop exited — server crashed".to_string());
+                                }
+
+                                // Check if the server has been administratively disabled/removed
+                                {
+                                    let servers = servers_for_loop.read().await;
+                                    if let Some(entry) = servers.get(&name_for_loop) {
+                                        let state = entry.state.read().await;
+                                        if matches!(
+                                            state.state,
+                                            ServerState::Disabled | ServerState::Draining
+                                        ) {
+                                            // Intentional stop — do not retry
+                                            break;
+                                        }
+                                    } else {
+                                        // Server was removed
+                                        break;
                                     }
                                 }
-                            }
 
-                            if !restarted {
-                                error!(
-                                    "Server '{}' failed to restart after {} attempts; disabling",
-                                    name_for_loop, MAX_RETRIES
-                                );
-                                let mut state = state_for_loop.write().await;
-                                state.transition_to(ServerState::Disabled);
-                                break;
+                                // Attempt crash recovery with exponential backoff
+                                let mut restarted = false;
+                                for attempt in 1..=max_retries {
+                                    let delay_ms = (retry_cfg.initial_delay_ms as f64
+                                        * retry_cfg.backoff_factor.powi((attempt - 1) as i32))
+                                        .min(retry_cfg.max_delay_ms as f64)
+                                        as u64;
+                                    let backoff = Duration::from_millis(delay_ms);
+                                    warn!(
+                                        server = %name_for_loop,
+                                        attempt = attempt,
+                                        max_attempts = max_retries,
+                                        backoff_ms = delay_ms,
+                                        "MCP server crashed — retrying"
+                                    );
+                                    tokio::time::sleep(backoff).await;
+
+                                    let args_ref: Vec<&str> =
+                                        args_for_loop.iter().map(|s| s.as_str()).collect();
+
+                                    match StdioServerTransport::spawn(
+                                        &command_for_loop,
+                                        &args_ref,
+                                        &env_for_loop,
+                                    )
+                                    .await
+                                    {
+                                        Ok(new_transport) => {
+                                            SCP_POOL_SPAWNS_TOTAL
+                                                .with_label_values(&[&name_for_loop])
+                                                .inc();
+                                            SCP_POOL_ACTIVE_PROCESSES
+                                                .with_label_values(&[&name_for_loop])
+                                                .set(1.0);
+
+                                            let (new_pool, new_receiver) =
+                                                SharedPool::new(new_transport);
+                                            let new_pool = Arc::new(new_pool);
+
+                                            // Update entry with fresh pool
+                                            {
+                                                let mut servers = servers_for_loop.write().await;
+                                                if let Some(entry) = servers.get_mut(&name_for_loop) {
+                                                    entry.pool = Some(new_pool.clone());
+                                                }
+                                            }
+
+                                            // Record success and restore Warm state
+                                            {
+                                                let mut state = state_for_loop.write().await;
+                                                state.record_success();
+                                                state.transition_to(ServerState::Warm);
+                                            }
+
+                                            info!(
+                                                server = %name_for_loop,
+                                                attempt = attempt,
+                                                "MCP server recovered after crash"
+                                            );
+
+                                            current_pool = new_pool;
+                                            current_receiver = Some(new_receiver);
+                                            restarted = true;
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            {
+                                                let mut state = state_for_loop.write().await;
+                                                state.record_failure(format!(
+                                                    "Spawn attempt {} failed: {}",
+                                                    attempt, e
+                                                ));
+                                            }
+                                            error!(
+                                                server = %name_for_loop,
+                                                attempt = attempt,
+                                                max_attempts = max_retries,
+                                                "Failed to respawn MCP server: {}", e
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if !restarted {
+                                    error!(
+                                        server = %name_for_loop,
+                                        attempts = max_retries,
+                                        "MCP server PERMANENTLY FAILED after all retries — server disabled, check logs and config"
+                                    );
+                                    let mut state = state_for_loop.write().await;
+                                    state.transition_to(ServerState::Disabled);
+                                    break;
+                                }
                             }
-                        }
-                    });
+                        })
+                        .catch_unwind()
+                        .map(move |result| {
+                            if let Err(panic_val) = result {
+                                let msg = panic_val
+                                    .downcast_ref::<&str>()
+                                    .copied()
+                                    .unwrap_or("unknown panic payload");
+                                error!(
+                                    server = %name_outer,
+                                    panic_msg = %msg,
+                                    "PANIC in MCP server recovery task — server is now unavailable"
+                                );
+                                // Note: state_outer cannot be used with .await in a sync context.
+                                // The panic disables the recovery loop; the server will remain in its
+                                // last state. Operators should restart the hub if this occurs.
+                                let _ = state_outer; // keep the clone alive to suppress unused warning
+                            }
+                        }),
+                    );
 
                     // Store handle under write lock
                     {

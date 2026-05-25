@@ -71,6 +71,9 @@ impl Router {
             tool_registry,
             fanout_timeout_secs,
             request_token_budget,
+            // Defaults to None (no cap). Callers should set this to ≤1MB (e.g. via
+            // `with_max_response_size`) for exec/shell backends to prevent memory spikes
+            // from extremely large tool responses before the filter pipeline runs.
             max_response_size_bytes: None,
             filter_pipeline,
             exposure,
@@ -751,6 +754,9 @@ impl Router {
                         error: None,
                     }
                 }
+                // Safety: PoolError::Cancelled is returned when the backend stdio process crashes
+                // mid-request. This arm ensures the crash is converted to a JSON-RPC error and
+                // never propagates as a Rust panic to the client session.
                 Err(e) => self.error_response(
                     request.id.clone(),
                     JsonRpcError::BACKEND_ERROR,
@@ -1068,7 +1074,7 @@ impl Router {
                             if !filter_result.dropped_chunks.is_empty() {
                                 s.store_chunks(
                                     request_id.clone(),
-                                    filter_result.dropped_chunks.clone(),
+                                    filter_result.dropped_chunks,
                                 );
                             }
                         }

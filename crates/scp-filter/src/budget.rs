@@ -66,18 +66,20 @@ impl BudgetEnforcer {
     /// 1. Sort chunks by score descending (stable sort to preserve relative order on ties)
     /// 2. Greedily add chunks until budget is exhausted
     /// 3. Re-sort selected chunks by original index (preserve document order)
-    /// 4. Return (selected_chunks, total_chunks_count)
+    /// 4. Return (selected_chunks, dropped_chunks, total_chunks_count)
+    ///    - selected_chunks: chunks that fit within budget (in document order)
+    ///    - dropped_chunks: chunks that did not make the cut
     ///    - total_chunks_count is the original count before selection (used by ProgressiveDisclosure)
     pub fn select_chunks(
         chunks: Vec<Chunk>,
         budget_tokens: usize,
         _min_tokens: usize,
-    ) -> (Vec<Chunk>, usize) {
+    ) -> (Vec<Chunk>, Vec<Chunk>, usize) {
         let total = chunks.len();
 
         // If no chunks, return empty
         if total == 0 {
-            return (vec![], 0);
+            return (vec![], vec![], 0);
         }
 
         // Sort by score descending (handle NaN by treating as 0)
@@ -104,15 +106,24 @@ impl BudgetEnforcer {
         }
 
         // If no chunks fit and budget is tight, force-include the top-scoring chunk
-        if selected.is_empty() && total > 0 {
-            // The first chunk in sorted_chunks is the highest-scoring
-            selected.push(sorted_chunks[0].clone());
+        if selected.is_empty() && !sorted_chunks.is_empty() {
+            let top = sorted_chunks.remove(0);
+            let dropped: Vec<Chunk> = sorted_chunks;
+            return (vec![top], dropped, total);
         }
+
+        // Compute dropped: all sorted chunks not selected
+        let selected_indices: std::collections::HashSet<usize> =
+            selected.iter().map(|c| c.index).collect();
+        let dropped: Vec<Chunk> = sorted_chunks
+            .into_iter()
+            .filter(|c| !selected_indices.contains(&c.index))
+            .collect();
 
         // Re-sort selected chunks by original index to restore document order
         selected.sort_by_key(|chunk| chunk.index);
 
-        (selected, total)
+        (selected, dropped, total)
     }
 
     /// Reassemble selected chunks into a single string.
@@ -215,7 +226,7 @@ mod tests {
         ];
 
         // Budget should fit approximately 3 chunks (each ~3 tokens)
-        let (selected, total) = BudgetEnforcer::select_chunks(chunks, 30, 0);
+        let (selected, _dropped, total) = BudgetEnforcer::select_chunks(chunks, 30, 0);
 
         assert_eq!(total, 5);
         // Should select highest-scoring chunks: 0.9, 0.7, 0.5
@@ -246,7 +257,7 @@ mod tests {
             },
         ];
 
-        let (selected, _) = BudgetEnforcer::select_chunks(chunks, 100, 0);
+        let (selected, _dropped, _) = BudgetEnforcer::select_chunks(chunks, 100, 0);
 
         // All should fit
         assert_eq!(selected.len(), 3);
@@ -272,7 +283,7 @@ mod tests {
         ];
 
         // Budget 0 should still return the top-scoring chunk
-        let (selected, total) = BudgetEnforcer::select_chunks(chunks, 0, 0);
+        let (selected, _dropped, total) = BudgetEnforcer::select_chunks(chunks, 0, 0);
 
         assert_eq!(total, 2);
         assert_eq!(selected.len(), 1);
@@ -301,7 +312,7 @@ mod tests {
         ];
 
         // Large budget should fit all
-        let (selected, total) = BudgetEnforcer::select_chunks(chunks, 1000, 0);
+        let (selected, _dropped, total) = BudgetEnforcer::select_chunks(chunks, 1000, 0);
 
         assert_eq!(total, 3);
         assert_eq!(selected.len(), 3);
