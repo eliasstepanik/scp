@@ -737,10 +737,7 @@ impl Router {
                             .token_budget_remaining
                             .saturating_sub(filter_result.tokens_delivered);
                         if !filter_result.dropped_chunks.is_empty() {
-                            s.store_chunks(
-                                request_id.clone(),
-                                filter_result.dropped_chunks,
-                            );
+                            s.store_chunks(request_id.clone(), filter_result.dropped_chunks);
                         }
                     }
 
