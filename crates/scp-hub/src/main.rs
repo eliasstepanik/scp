@@ -237,6 +237,20 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Periodic re-discovery: re-run tools/list fanout every 60s so backends
+    // that weren't ready at startup (or that restart mid-session) self-heal.
+    {
+        let router_clone = router.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // skip the immediate tick — eager discovery above handles T+2s
+            loop {
+                interval.tick().await;
+                router_clone.discover_tools().await;
+            }
+        });
+    }
+
     // Wait for shutdown signal
     shutdown_signal().await;
 
