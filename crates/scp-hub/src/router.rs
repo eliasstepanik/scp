@@ -415,6 +415,18 @@ impl Router {
             _ => {}
         }
 
+        // If the registry is empty, trigger a tools/list to populate it before
+        // attempting the lookup. This handles the cold-start case where the client
+        // calls tools/call before tools/list has ever been called.
+        {
+            let registry = self.tool_registry.read().await;
+            if registry.tool_count() == 0 {
+                drop(registry);
+                let list_req = JsonRpcRequest::new(RequestId::Null, "tools/list".to_string(), None);
+                let _ = self.handle_tools_list(&list_req).await;
+            }
+        }
+
         // Lookup tool in registry
         let registry = self.tool_registry.read().await;
         match registry.lookup(&tool_name) {
@@ -447,11 +459,29 @@ impl Router {
                 }
             }
             None => {
+                let total = registry.tool_count();
+                let sample: Vec<String> = registry
+                    .all_tools()
+                    .iter()
+                    .take(10)
+                    .map(|e| e.original_name.clone())
+                    .collect();
                 drop(registry);
+                let hint = if total == 0 {
+                    "registry is empty — call tools/list first to discover available tools"
+                        .to_string()
+                } else {
+                    format!(
+                        "{} tool{} registered: {}",
+                        total,
+                        if total == 1 { "" } else { "s" },
+                        sample.join(", ")
+                    )
+                };
                 self.error_response(
                     request.id.clone(),
                     JsonRpcError::INVALID_PARAMS,
-                    format!("Tool not found: {}", tool_name),
+                    format!("Tool not found: {} ({})", tool_name, hint),
                 )
             }
         }
@@ -612,5 +642,74 @@ mod tests {
 
         let response = router.route(request).await;
         assert!(response.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tool_not_found_empty_registry_hint() {
+        let pool_manager = Arc::new(PoolManager::new());
+        let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let router = Router::new(pool_manager, tool_registry, 5, 4000);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(RequestId::Number(1)),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({ "name": "nonexistent_tool", "arguments": {} })),
+        };
+
+        let response = router.route(request).await;
+        assert!(response.error.is_some());
+        let msg = response.error.unwrap().message;
+        assert!(
+            msg.contains("registry is empty"),
+            "Expected empty-registry hint in: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tool_not_found_with_registered_tools_hint() {
+        use scp_index::ToolEntry;
+
+        let pool_manager = Arc::new(PoolManager::new());
+        let tool_registry = Arc::new(RwLock::new(ToolRegistry::new()));
+
+        // Pre-populate the registry with a known tool so the error includes the count
+        {
+            let mut registry = tool_registry.write().await;
+            registry.register_tools(
+                "test-server",
+                vec![ToolEntry {
+                    original_name: "known_tool".to_string(),
+                    qualified_name: "test-server.known_tool".to_string(),
+                    server_name: "test-server".to_string(),
+                    description: None,
+                    input_schema: serde_json::json!({}),
+                    tags: vec![],
+                    avg_response_tokens: 0.0,
+                    call_count: 0,
+                }],
+            );
+        }
+
+        let router = Router::new(pool_manager, tool_registry, 5, 4000);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(RequestId::Number(1)),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({ "name": "unknown_tool", "arguments": {} })),
+        };
+
+        let response = router.route(request).await;
+        assert!(response.error.is_some());
+        let msg = response.error.unwrap().message;
+        assert!(
+            msg.contains("1 tool registered"),
+            "Expected tool count hint in: {msg}"
+        );
+        assert!(
+            msg.contains("known_tool"),
+            "Expected sample tool name in: {msg}"
+        );
     }
 }
