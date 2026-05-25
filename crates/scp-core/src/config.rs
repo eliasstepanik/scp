@@ -336,11 +336,16 @@ pub struct LoggingConfig {
     pub file: Option<String>,
 }
 
-/// Authentication configuration (stub for future use)
+/// Authentication configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Authentication method
     pub method: String,
+    /// Simple bearer token for hub-wide authentication enforcement.
+    /// When set, every request to the hub (except /health and /metrics) must
+    /// include `Authorization: Bearer <bearer_token>` or the hub returns 401.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
     /// Authentication profiles
     pub profiles: std::collections::HashMap<String, AuthProfile>,
 }

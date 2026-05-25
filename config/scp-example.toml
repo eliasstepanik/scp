@@ -25,6 +25,14 @@ max_clients = 100
 # Session timeout in seconds (default: 3600 = 1 hour)
 session_timeout_secs = 3600
 
+# Optional: Hub-wide bearer-token authentication.
+# When set, every request to the hub (except /health and /metrics) must
+# include the header:  Authorization: Bearer <your-secret-token-here>
+# Requests without a valid token are rejected with HTTP 401.
+#
+# [hub.auth]
+# bearer_token = "your-secret-token-here"
+
 # Hub defaults
 [hub.defaults]
 # Token budget per request (default: 4000)

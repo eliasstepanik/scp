@@ -1,3 +1,4 @@
+use chrono;
 use scp_core::config::FilterConfig;
 use scp_core::protocol::{JsonRpcRequest, RequestId};
 use scp_hub::router::Router;
@@ -9,7 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
-use chrono;
 
 // ============================================================================
 // Test 1: Two clients with separate sessions, each calls tools/list and tools/call
@@ -250,10 +250,7 @@ async fn test_session_expiry() {
         let session_locked = session.lock().unwrap();
         let now = chrono::Utc::now();
         let elapsed_secs = (now - session_locked.last_active).num_seconds();
-        assert!(
-            elapsed_secs >= 1,
-            "Session should be at least 1 second old"
-        );
+        assert!(elapsed_secs >= 1, "Session should be at least 1 second old");
     }
 }
 

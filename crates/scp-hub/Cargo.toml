@@ -31,3 +31,4 @@ scp-filter = { path = "../scp-filter" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tower = { workspace = true }

@@ -64,16 +64,7 @@ impl ClientListener {
     /// Start the HTTP listener
     #[allow(dead_code)]
     pub async fn run(self) -> Result<()> {
-        let app = AxumRouter::new()
-            .route("/health", get(health_handler_simple))
-            .route("/mcp", post(handle_post_mcp))
-            .route("/mcp", get(handle_get_mcp))
-            .route("/mcp", delete(handle_delete_mcp))
-            .layer(middleware::from_fn_with_state(
-                self.state.clone(),
-                auth_middleware,
-            ))
-            .with_state(self.state);
+        let app = build_app(self.state);
 
         let listener = tokio::net::TcpListener::bind(self.addr).await?;
         info!("HTTP listener started on {}", self.addr);
@@ -92,16 +83,7 @@ impl ClientListener {
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
-        let app = AxumRouter::new()
-            .route("/health", get(health_handler_simple))
-            .route("/mcp", post(handle_post_mcp))
-            .route("/mcp", get(handle_get_mcp))
-            .route("/mcp", delete(handle_delete_mcp))
-            .layer(middleware::from_fn_with_state(
-                self.state.clone(),
-                auth_middleware,
-            ))
-            .with_state(self.state);
+        let app = build_app(self.state);
 
         let listener = tokio::net::TcpListener::bind(self.addr).await?;
         info!("HTTP listener started on {}", self.addr);
@@ -117,18 +99,63 @@ impl ClientListener {
     }
 }
 
+/// Build the axum application, keeping /health and /metrics public while
+/// protecting all other routes with the authentication middleware.
+fn build_app(state: ListenerState) -> AxumRouter {
+    // Protected routes: require auth when a token/profile is configured.
+    let protected = AxumRouter::new()
+        .route("/mcp", post(handle_post_mcp))
+        .route("/mcp", get(handle_get_mcp))
+        .route("/mcp", delete(handle_delete_mcp))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .with_state(state.clone());
+
+    // Public routes: always accessible without authentication.
+    let public = AxumRouter::new()
+        .route("/health", get(health_handler_simple))
+        .with_state(state);
+
+    AxumRouter::new().merge(protected).merge(public)
+}
+
 /// Simple health check endpoint (unauthenticated)
 async fn health_handler_simple() -> impl axum::response::IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
 }
 
+/// Build a 401 Unauthorized response with a `WWW-Authenticate: Bearer` header
+/// and a JSON body `{"error": "<message>"}`.
+fn unauthorized_response(message: &str) -> Response {
+    use axum::response::IntoResponse;
+    let mut resp = (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": message})),
+    )
+        .into_response();
+    if let Ok(hv) = "Bearer".parse() {
+        resp.headers_mut().insert("WWW-Authenticate", hv);
+    }
+    resp
+}
+
 /// Authentication middleware
+///
+/// Enforcement priority:
+/// 1. If `auth_config.bearer_token` is set, the request **must** supply
+///    `Authorization: Bearer <token>` with the exact configured value.
+///    Any mismatch → 401 with `WWW-Authenticate: Bearer`.
+/// 2. If `auth_config.method` is `"bearer"` (profile-based), the token is
+///    resolved against the profiles map as before.
+/// 3. If no auth config is present, requests pass through unauthenticated.
 async fn auth_middleware(
     State(state): State<ListenerState>,
     headers: HeaderMap,
     mut request: axum::extract::Request,
     next: Next,
-) -> Result<Response, (StatusCode, String)> {
+) -> Response {
     let auth_header = headers
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
@@ -136,23 +163,29 @@ async fn auth_middleware(
 
     let token = auth_header.strip_prefix("Bearer ").unwrap_or("");
 
-    // Determine profile based on auth config
+    // Phase 1: simple bearer_token enforcement.
+    if let Some(ref auth_config) = state.auth_config {
+        if let Some(ref expected_token) = auth_config.bearer_token {
+            if token != expected_token.as_str() {
+                return unauthorized_response("Unauthorized");
+            }
+        }
+    }
+
+    // Phase 2: profile-based bearer auth.
     let profile_name = if let Some(auth_config) = &state.auth_config {
         match auth_config.method.as_str() {
             "bearer" => {
                 // Bearer token required
                 if token.is_empty() {
-                    return Err((
-                        StatusCode::UNAUTHORIZED,
-                        "Bearer token required".to_string(),
-                    ));
+                    return unauthorized_response("Bearer token required");
                 }
 
                 // Resolve profile by token
                 match auth_config.resolve_profile(token) {
                     Some(profile_name) => profile_name,
                     None => {
-                        return Err((StatusCode::UNAUTHORIZED, "Invalid bearer token".to_string()));
+                        return unauthorized_response("Invalid bearer token");
                     }
                 }
             }
@@ -170,11 +203,11 @@ async fn auth_middleware(
     let mut response = next.run(request).await;
 
     // Add profile name to response headers for client reference
-    if let Ok(headers) = profile_name.parse() {
-        response.headers_mut().insert("X-Profile-Name", headers);
+    if let Ok(hv) = profile_name.parse() {
+        response.headers_mut().insert("X-Profile-Name", hv);
     }
 
-    Ok(response)
+    response
 }
 
 /// POST /mcp — receive client request
@@ -654,8 +687,24 @@ pub async fn run_stdio_client(session_store: Arc<SessionStore>, router: Arc<Rout
 mod tests {
     use super::*;
     use crate::router::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use scp_core::config::AuthConfig;
     use scp_index::ToolRegistry;
     use scp_pool::PoolManager;
+    use tower::ServiceExt;
+
+    fn make_state(auth_config: Option<AuthConfig>) -> ListenerState {
+        let store = Arc::new(SessionStore::new(1000));
+        let pool_manager = Arc::new(PoolManager::new());
+        let tool_registry = Arc::new(tokio::sync::RwLock::new(ToolRegistry::new()));
+        let router = Arc::new(Router::new(pool_manager, tool_registry, 5, 4000));
+        ListenerState {
+            session_store: store,
+            router,
+            auth_config,
+        }
+    }
 
     #[test]
     fn test_listener_creation() {
@@ -682,5 +731,117 @@ mod tests {
             .as_secs();
         let reset = now + 60;
         assert!(reset > now);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bearer-token auth middleware tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a minimal app with just the protected /mcp route so we
+    /// can send requests and inspect the status code returned by the middleware.
+    fn make_protected_app(auth_config: Option<AuthConfig>) -> AxumRouter {
+        use axum::routing::get;
+        let state = make_state(auth_config);
+        AxumRouter::new()
+            .route("/mcp", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn test_request_without_token_passes_when_no_auth_configured() {
+        let app = make_protected_app(None);
+        let response = app
+            .oneshot(Request::builder().uri("/mcp").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // No auth configured → should reach the handler (200).
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_request_without_auth_header_returns_401_when_token_configured() {
+        let auth = AuthConfig {
+            bearer_token: Some("secret".to_string()),
+            ..Default::default()
+        };
+        let app = make_protected_app(Some(auth));
+        let response = app
+            .oneshot(Request::builder().uri("/mcp").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get("WWW-Authenticate")
+                .map(|v| v.as_bytes()),
+            Some(b"Bearer".as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_with_wrong_token_returns_401() {
+        let auth = AuthConfig {
+            bearer_token: Some("correct-token".to_string()),
+            ..Default::default()
+        };
+        let app = make_protected_app(Some(auth));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp")
+                    .header("Authorization", "Bearer wrong-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_request_with_correct_token_passes() {
+        let auth = AuthConfig {
+            bearer_token: Some("correct-token".to_string()),
+            ..Default::default()
+        };
+        let app = make_protected_app(Some(auth));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp")
+                    .header("Authorization", "Bearer correct-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Correct token → reaches the handler (200).
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint_is_always_accessible() {
+        // Even when a bearer_token is configured, /health must be public.
+        let auth = AuthConfig {
+            bearer_token: Some("secret".to_string()),
+            ..Default::default()
+        };
+        let state = make_state(Some(auth));
+        let app = build_app(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
