@@ -419,11 +419,20 @@ async fn handle_post_mcp_inner(
     // Route message to backend via Router
     let response = state.router.route(request, Some(session.clone())).await;
 
-    // Push response to session's outbound channel
-    if let Some(session) = state.session_store.get(&session_id).await {
-        let session_locked = session.lock().unwrap_or_else(|e| e.into_inner());
-        if let Ok(response_value) = serde_json::to_value(&response) {
-            let _ = session_locked.outbound_tx.send(response_value);
+    // Push response to session's outbound channel only when an SSE subscriber exists.
+    // Transient POST sessions (no Mcp-Session-Id header) never have a subscriber, so
+    // broadcasting to them wastes broadcast-channel slots (cap 100) and can hold
+    // multi-MB response values in memory across many concurrent sessions.
+    // For persistent sessions we additionally gate on receiver_count() > 0 so that
+    // sessions whose SSE stream has already closed don't accumulate backlogged messages.
+    if !is_transient {
+        if let Some(session) = state.session_store.get(&session_id).await {
+            let session_locked = session.lock().unwrap_or_else(|e| e.into_inner());
+            if session_locked.outbound_tx.receiver_count() > 0 {
+                if let Ok(response_value) = serde_json::to_value(&response) {
+                    let _ = session_locked.outbound_tx.send(response_value);
+                }
+            }
         }
     }
 

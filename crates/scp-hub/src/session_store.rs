@@ -200,28 +200,53 @@ impl Session {
 
         let new_bytes: usize = chunks.iter().map(|c| c.text.len()).sum();
 
-        // Evict by bytes
+        // Evict the oldest entry that actually exists in the map, skipping stale keys.
+        // A key is stale when it was already removed by a previous eviction pass — this
+        // happens because both loops share chunk_cache_order but each removes from
+        // chunk_cache independently. Draining stale keys prevents the byte counter from
+        // diverging from reality.
+        macro_rules! evict_one {
+            () => {{
+                let mut evicted_something = false;
+                while let Some(oldest) = self.chunk_cache_order.pop_front() {
+                    if let Some(evicted) = self.chunk_cache.remove(&oldest) {
+                        self.chunk_cache_bytes = self
+                            .chunk_cache_bytes
+                            .saturating_sub(evicted.iter().map(|c| c.text.len()).sum::<usize>());
+                        evicted_something = true;
+                        break;
+                    }
+                    // key was stale (already evicted) — skip and try the next one
+                }
+                evicted_something
+            }};
+        }
+
+        // Evict by bytes first (most memory-critical).
         while self.chunk_cache_bytes + new_bytes > MAX_CACHE_BYTES
             && !self.chunk_cache_order.is_empty()
         {
-            if let Some(oldest) = self.chunk_cache_order.pop_front() {
-                if let Some(evicted) = self.chunk_cache.remove(&oldest) {
-                    self.chunk_cache_bytes = self
-                        .chunk_cache_bytes
-                        .saturating_sub(evicted.iter().map(|c| c.text.len()).sum::<usize>());
-                }
+            if !evict_one!() {
+                break; // order drained or fully stale — stop
             }
         }
 
-        // Evict by count
+        // Evict by count (keeps entry count bounded).
         while self.chunk_cache.len() >= MAX_CACHE && !self.chunk_cache_order.is_empty() {
-            if let Some(oldest) = self.chunk_cache_order.pop_front() {
-                if let Some(evicted) = self.chunk_cache.remove(&oldest) {
-                    self.chunk_cache_bytes = self
-                        .chunk_cache_bytes
-                        .saturating_sub(evicted.iter().map(|c| c.text.len()).sum::<usize>());
-                }
+            if !evict_one!() {
+                break;
             }
+        }
+
+        // If the request_id already exists, subtract its current byte contribution
+        // before overwriting, so the counter stays accurate on re-inserts.
+        if let Some(existing) = self.chunk_cache.get(&request_id) {
+            self.chunk_cache_bytes = self
+                .chunk_cache_bytes
+                .saturating_sub(existing.iter().map(|c| c.text.len()).sum::<usize>());
+            // The existing key is already in chunk_cache_order. The new push_back below
+            // adds a duplicate entry; when the second copy is later popped and the key is
+            // already gone from the map, evict_one! will silently discard it — safe and bounded.
         }
 
         self.chunk_cache_bytes += new_bytes;

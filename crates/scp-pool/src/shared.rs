@@ -134,18 +134,25 @@ impl SharedPool {
 
         {
             let sender = self.sender.lock().await;
-            sender
-                .send(&request_value)
-                .await
-                .map_err(|e| PoolError::TransportError(e.to_string()))?;
+            if let Err(e) = sender.send(&request_value).await {
+                self.pending.lock().await.remove(&internal_id);
+                return Err(PoolError::TransportError(e.to_string()));
+            }
         }
 
         debug!("Request sent with internal ID: {}", internal_id);
 
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| PoolError::Timeout)?
-            .map_err(|_| PoolError::Cancelled)?;
+        let response = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Err(_) => {
+                self.pending.lock().await.remove(&internal_id);
+                return Err(PoolError::Timeout);
+            }
+            Ok(Err(_)) => {
+                self.pending.lock().await.remove(&internal_id);
+                return Err(PoolError::Cancelled);
+            }
+            Ok(Ok(v)) => v,
+        };
 
         if let Some(err) = response.error {
             return Err(PoolError::TransportError(format!(
@@ -177,20 +184,32 @@ impl SharedPool {
 
         {
             let sender = self.sender.lock().await;
-            let request_value =
-                serde_json::to_value(&request).map_err(|e| PoolError::Internal(e.to_string()))?;
-            sender
-                .send(&request_value)
-                .await
-                .map_err(|e| PoolError::TransportError(e.to_string()))?;
+            let request_value = match serde_json::to_value(&request) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.pending.lock().await.remove(&internal_id);
+                    return Err(PoolError::Internal(e.to_string()));
+                }
+            };
+            if let Err(e) = sender.send(&request_value).await {
+                self.pending.lock().await.remove(&internal_id);
+                return Err(PoolError::TransportError(e.to_string()));
+            }
         }
 
         debug!("Request sent with internal ID: {}", internal_id);
 
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| PoolError::Timeout)?
-            .map_err(|_| PoolError::Cancelled)?;
+        let response = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Err(_) => {
+                self.pending.lock().await.remove(&internal_id);
+                return Err(PoolError::Timeout);
+            }
+            Ok(Err(_)) => {
+                self.pending.lock().await.remove(&internal_id);
+                return Err(PoolError::Cancelled);
+            }
+            Ok(Ok(v)) => v,
+        };
 
         let mut mapped_response = response;
         mapped_response.id = original_id;
