@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
+use chrono;
 
 // ============================================================================
 // Test 1: Two clients with separate sessions, each calls tools/list and tools/call
@@ -247,9 +248,10 @@ async fn test_session_expiry() {
     // so we verify that the session's last_active time indicates it's old
     if let Some(session) = session_store.get(&session_id).await {
         let session_locked = session.lock().unwrap();
-        let elapsed = session_locked.last_active.elapsed();
+        let now = chrono::Utc::now();
+        let elapsed_secs = (now - session_locked.last_active).num_seconds();
         assert!(
-            elapsed.as_secs() >= 1,
+            elapsed_secs >= 1,
             "Session should be at least 1 second old"
         );
     }
