@@ -6,6 +6,7 @@ listen_port = 3100
 session_timeout_secs = 300
 tool_cache_ttl_secs = 30
 shutdown_timeout_secs = 5
+max_response_size_bytes = 1048576
 
 [hub.defaults]
 request_token_budget = 4000

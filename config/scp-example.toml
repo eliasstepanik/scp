@@ -25,6 +25,10 @@ max_clients = 100
 # Session timeout in seconds (default: 3600 = 1 hour)
 session_timeout_secs = 3600
 
+# Maximum response size in bytes before truncation (1 MiB). Set explicitly for
+# exec/shell backends to prevent memory spikes from extremely large tool responses.
+max_response_size_bytes = 1048576
+
 # Optional: Hub-wide bearer-token authentication.
 # When set, every request to the hub (except /health and /metrics) must
 # include the header:  Authorization: Bearer <your-secret-token-here>
