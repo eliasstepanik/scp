@@ -31,11 +31,10 @@ function formatResult(stdout, stderr, exitCode) {
 }
 /** Register the exec tool on an MCP server */
 export function registerExecTool(server, conn) {
-    const inputSchema = z.object({
+    server.tool('exec', 'Execute a shell command on the remote SSH server and return the output.', {
         command: z.string().describe('Shell command to execute on the remote SSH server'),
         description: z.string().optional().describe('Optional description of what this command will do'),
-    });
-    server.tool('exec', 'Execute a shell command on the remote SSH server and return the output.', inputSchema, async (args) => {
+    }, async (args) => {
         const { command } = args;
         if (!command || command.trim().length === 0) {
             throw new McpError(ErrorCode.InvalidParams, 'command must not be empty');
@@ -58,11 +57,10 @@ export function registerExecTool(server, conn) {
 }
 /** Register the sudo-exec tool on an MCP server */
 export function registerSudoExecTool(server, conn) {
-    const inputSchema = z.object({
+    server.tool('sudo-exec', 'Execute a shell command on the remote SSH server using sudo. Will use sudo password if provided, otherwise assumes passwordless sudo.', {
         command: z.string().describe('Shell command to execute with sudo on the remote SSH server'),
         description: z.string().optional().describe('Optional description of what this command will do'),
-    });
-    server.tool('sudo-exec', 'Execute a shell command on the remote SSH server using sudo. Will use sudo password if provided, otherwise assumes passwordless sudo.', inputSchema, async (args) => {
+    }, async (args) => {
         const { command } = args;
         if (!command || command.trim().length === 0) {
             throw new McpError(ErrorCode.InvalidParams, 'command must not be empty');
