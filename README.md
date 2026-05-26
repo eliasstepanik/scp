@@ -29,6 +29,74 @@ SCP solves this by:
 
 ---
 
+## Quick Example
+
+### The problem
+
+You ask your AI assistant: "Find all TODO comments in my project."
+
+Without SCP, the assistant calls `filesystem/read_file` for each source file and receives the full contents of every file — potentially hundreds of kilobytes of irrelevant code. A medium-sized project can easily consume 12,000+ tokens for a query whose answer is 20 lines.
+
+**Without SCP — raw response (excerpt):**
+
+```
+// src/server.rs (847 lines, 9,200 tokens)
+
+use std::net::TcpListener;
+use std::io::{BufReader, BufWriter};
+// ... 840 more lines of irrelevant code ...
+// TODO: add connection timeout
+// ... 200 more lines ...
+```
+
+Context window fills up fast. You may need to read 10 files before the assistant has seen all the TODOs.
+
+---
+
+### With SCP in the middle
+
+SCP intercepts the `filesystem/read_file` response before it reaches the model, runs it through the filter pipeline, and returns only the chunks that scored highest against the session context ("TODO comments").
+
+```
+LLM Client ──► SCP Hub ──► filesystem MCP server
+                  │
+            Filter Pipeline
+            (chunk → score → select)
+                  │
+            ◀──── top-k relevant chunks only
+```
+
+**With SCP — filtered response:**
+
+```
+[scp: 3 of 847 chunks delivered, request_id=req_7f3a, 11,600 tokens saved]
+
+src/server.rs:214  // TODO: add connection timeout
+src/auth.rs:88     // TODO: rotate signing key before v1.0
+src/db.rs:331      // TODO: index on user_id column for perf
+```
+
+**Token count: 12,000 → 400 delivered.**
+
+The assistant gets exactly what it needs. You can ask for more with `scp_get_more` if the results are incomplete.
+
+---
+
+### Built-in SCP tools
+
+SCP exposes four synthetic tools that are always available to the client, regardless of which backend servers are connected:
+
+| Tool | What it does |
+|---|---|
+| `scp_get_more` | Fetches the next batch of filtered chunks for a previous response. Pass `request_id` and `offset` to paginate results that were truncated by the budget. |
+| `scp_info` | Returns hub version, active extensions, and the count of connected servers and indexed tools. Useful for debugging and introspection. |
+| `scp_budget` | Shows the current session token budget: total, remaining, and the enforcement strategy in effect. |
+| `scp_budget_reset` | Resets the session budget back to its initial value. Use this after a large operation to restore headroom for the next task. |
+
+These tools let the model stay informed and in control of context: it can check budget before a heavy operation, paginate through large result sets, and inspect what SCP is doing — without any changes to the client application.
+
+---
+
 ## Architecture
 
 ```
