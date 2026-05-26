@@ -4,3 +4,4 @@ target/
 tasks/
 mcp/ssh-server/node_modules/
 mcp/n8n-server/node_modules/
+AGENT.md
