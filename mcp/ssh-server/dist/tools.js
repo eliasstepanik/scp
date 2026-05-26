@@ -35,10 +35,7 @@ export function registerExecTool(server, conn) {
         command: z.string().describe('Shell command to execute on the remote SSH server'),
         description: z.string().optional().describe('Optional description of what this command will do'),
     });
-    server.registerTool('exec', {
-        description: 'Execute a shell command on the remote SSH server and return the output.',
-        inputSchema,
-    }, async (args) => {
+    server.tool('exec', 'Execute a shell command on the remote SSH server and return the output.', inputSchema, async (args) => {
         const { command } = args;
         if (!command || command.trim().length === 0) {
             throw new McpError(ErrorCode.InvalidParams, 'command must not be empty');
@@ -65,10 +62,7 @@ export function registerSudoExecTool(server, conn) {
         command: z.string().describe('Shell command to execute with sudo on the remote SSH server'),
         description: z.string().optional().describe('Optional description of what this command will do'),
     });
-    server.registerTool('sudo-exec', {
-        description: 'Execute a shell command on the remote SSH server using sudo. Will use sudo password if provided, otherwise assumes passwordless sudo.',
-        inputSchema,
-    }, async (args) => {
+    server.tool('sudo-exec', 'Execute a shell command on the remote SSH server using sudo. Will use sudo password if provided, otherwise assumes passwordless sudo.', inputSchema, async (args) => {
         const { command } = args;
         if (!command || command.trim().length === 0) {
             throw new McpError(ErrorCode.InvalidParams, 'command must not be empty');
