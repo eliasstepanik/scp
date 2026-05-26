@@ -116,7 +116,8 @@ pub struct HubDefaults {
 }
 
 fn default_request_token_budget() -> usize {
-    4000
+    // 0 = unconstrained (no token cap). Set to a positive value to enable budget enforcement.
+    0
 }
 
 fn default_session_token_budget() -> usize {
@@ -137,6 +138,20 @@ fn default_max_requests_per_min() -> u32 {
 
 fn default_burst_size() -> u32 {
     20
+}
+
+impl Default for HubDefaults {
+    fn default() -> Self {
+        Self {
+            request_token_budget: default_request_token_budget(),
+            session_token_budget: default_session_token_budget(),
+            max_tools_exposed: default_max_tools_exposed(),
+            fanout_timeout_secs: default_fanout_timeout_secs(),
+            max_requests_per_min: default_max_requests_per_min(),
+            burst_size: default_burst_size(),
+            exposure: ExposureConfig::default(),
+        }
+    }
 }
 
 /// Controls which backend tools are exposed in `tools/list` responses.

@@ -9,6 +9,9 @@ pub struct BudgetEnforcer;
 impl BudgetEnforcer {
     /// Truncate a response to fit within budget
     pub fn enforce(response: &mut JsonRpcResponse, budget_tokens: usize) {
+        if budget_tokens == 0 {
+            return;
+        }
         if let Some(Value::Object(ref mut obj)) = response.result {
             if let Some(Value::String(ref mut text)) = obj.get_mut("content") {
                 *text = Self::truncate_to_budget(text, budget_tokens);
@@ -19,6 +22,9 @@ impl BudgetEnforcer {
     /// Truncate a string to fit within token budget
     /// Appends "..." if truncated, ensures minimum 200 tokens delivered
     pub fn truncate_to_budget(text: &str, budget_tokens: usize) -> String {
+        if budget_tokens == 0 {
+            return text.to_string();
+        }
         let current_tokens = count_tokens(text);
 
         // If already under budget, return as-is
@@ -80,6 +86,13 @@ impl BudgetEnforcer {
         // If no chunks, return empty
         if total == 0 {
             return (vec![], vec![], 0);
+        }
+
+        // budget_tokens == 0 means unconstrained — return all chunks in document order
+        if budget_tokens == 0 {
+            let mut all = chunks;
+            all.sort_by_key(|c| c.index);
+            return (all, vec![], total);
         }
 
         // Sort by score descending (handle NaN by treating as 0)
@@ -268,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_chunks_empty_budget_force_includes_top() {
+    fn test_select_chunks_tight_budget_force_includes_top() {
         let chunks = vec![
             Chunk {
                 text: "low score".to_string(),
@@ -282,13 +295,53 @@ mod tests {
             },
         ];
 
-        // Budget 0 should still return the top-scoring chunk
-        let (selected, _dropped, total) = BudgetEnforcer::select_chunks(chunks, 0, 0);
+        // Budget 3 is tight enough to force top-1 but not the unconstrained sentinel
+        let (selected, _dropped, total) = BudgetEnforcer::select_chunks(chunks, 3, 0);
 
         assert_eq!(total, 2);
         assert_eq!(selected.len(), 1);
         // Should be the highest-scoring chunk
         assert_eq!(selected[0].score, 0.9);
+    }
+
+    #[test]
+    fn test_select_chunks_unconstrained_budget() {
+        // budget=0 should return ALL chunks, not just top-1
+        let chunks = vec![
+            Chunk {
+                text: "chunk one".to_string(),
+                index: 0,
+                score: 0.1,
+            },
+            Chunk {
+                text: "chunk two".to_string(),
+                index: 1,
+                score: 0.9,
+            },
+            Chunk {
+                text: "chunk three".to_string(),
+                index: 2,
+                score: 0.5,
+            },
+        ];
+
+        let (selected, dropped, total) = BudgetEnforcer::select_chunks(chunks, 0, 0);
+
+        assert_eq!(total, 3);
+        assert_eq!(selected.len(), 3, "unconstrained budget must return all chunks");
+        assert_eq!(dropped.len(), 0);
+        // Chunks should be in document order
+        assert_eq!(selected[0].index, 0);
+        assert_eq!(selected[1].index, 1);
+        assert_eq!(selected[2].index, 2);
+    }
+
+    #[test]
+    fn test_truncate_unconstrained_budget() {
+        // budget=0 should return the text unchanged (no "...")
+        let text = "hello world this is a long text";
+        let result = BudgetEnforcer::truncate_to_budget(text, 0);
+        assert_eq!(result, text);
     }
 
     #[test]

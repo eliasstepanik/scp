@@ -39,8 +39,8 @@ max_response_size_bytes = 1048576
 
 # Hub defaults
 [hub.defaults]
-# Token budget per request (default: 4000)
-request_token_budget = 4000
+# Token budget per request (0 = unconstrained (no token cap, default))
+request_token_budget = 0  # 0 = unconstrained (no token cap, default)
 
 # Token budget per session (default: 32000)
 session_token_budget = 32000

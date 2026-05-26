@@ -818,18 +818,22 @@ impl Router {
                 };
             }
             "scp_budget" => {
-                let (remaining, total) = if let Some(sess) = &session {
-                    let s = sess.lock().unwrap_or_else(|e| e.into_inner());
-                    (s.token_budget_remaining, self.request_token_budget)
+                let text = if self.request_token_budget == 0 {
+                    "Budget: unlimited (no token cap configured)".to_string()
                 } else {
-                    (self.request_token_budget, self.request_token_budget)
+                    let (remaining, total) = if let Some(sess) = &session {
+                        let s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                        (s.token_budget_remaining, self.request_token_budget)
+                    } else {
+                        (self.request_token_budget, self.request_token_budget)
+                    };
+                    serde_json::to_string(&json!({
+                        "remaining": remaining,
+                        "total": total,
+                        "used": total.saturating_sub(remaining)
+                    }))
+                    .unwrap_or_default()
                 };
-                let text = serde_json::to_string(&json!({
-                    "remaining": remaining,
-                    "total": total,
-                    "used": total.saturating_sub(remaining)
-                }))
-                .unwrap_or_default();
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
@@ -844,11 +848,19 @@ impl Router {
                     let mut s = sess.lock().unwrap_or_else(|e| e.into_inner());
                     s.token_budget_remaining = self.request_token_budget;
                 }
-                let text = serde_json::to_string(&json!({
-                    "status": "reset",
-                    "new_budget": self.request_token_budget
-                }))
-                .unwrap_or_default();
+                let text = if self.request_token_budget == 0 {
+                    serde_json::to_string(&json!({
+                        "status": "reset",
+                        "new_budget": "unlimited"
+                    }))
+                    .unwrap_or_default()
+                } else {
+                    serde_json::to_string(&json!({
+                        "status": "reset",
+                        "new_budget": self.request_token_budget
+                    }))
+                    .unwrap_or_default()
+                };
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),

@@ -5,6 +5,16 @@
 import { z } from 'zod';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { sanitizeError } from './sanitize.js';
+// Hard deadline for the entire tool call (connect + exec).
+// Must be shorter than the MCP SDK's internal pool/request timeout
+// to guarantee we return a clean error rather than letting the SDK timeout fire.
+const OUTER_TIMEOUT_MS = 90_000;
+function withDeadline(ms, fn) {
+    return Promise.race([
+        fn(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`Tool call exceeded ${ms}ms deadline`)), ms)),
+    ]);
+}
 /** Format the result of a command execution for MCP response */
 function formatResult(stdout, stderr, exitCode) {
     const parts = [];
@@ -34,7 +44,7 @@ export function registerExecTool(server, conn) {
             throw new McpError(ErrorCode.InvalidParams, 'command must not be empty');
         }
         try {
-            const result = await conn.exec(command);
+            const result = await withDeadline(OUTER_TIMEOUT_MS, () => conn.exec(command));
             return {
                 content: [
                     {
@@ -64,7 +74,7 @@ export function registerSudoExecTool(server, conn) {
             throw new McpError(ErrorCode.InvalidParams, 'command must not be empty');
         }
         try {
-            const result = await conn.sudoExec(command);
+            const result = await withDeadline(OUTER_TIMEOUT_MS, () => conn.sudoExec(command));
             return {
                 content: [
                     {

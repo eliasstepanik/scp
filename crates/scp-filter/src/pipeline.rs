@@ -17,7 +17,8 @@ pub struct FilterContext {
     pub session_id: String,
     /// Name of the tool being called
     pub tool_name: String,
-    /// Token budget for this response
+    /// Token budget for this response.
+    /// 0 = unconstrained (no token cap).
     pub budget_tokens: usize,
     /// Query terms for relevance scoring
     pub query_terms: Vec<String>,
@@ -170,8 +171,15 @@ impl FilterPipeline {
         }
 
         // Stage 6: BudgetEnforcer — one-pass: selected, dropped, total returned directly
-        let (selected_chunks, dropped_chunks, total_count) =
-            BudgetEnforcer::select_chunks(chunks, ctx.budget_tokens, 200);
+        // When budget_tokens == 0 the pipeline is unconstrained: pass all chunks through.
+        let (selected_chunks, dropped_chunks, total_count) = if ctx.budget_tokens == 0 {
+            let total = chunks.len();
+            let mut all = chunks;
+            all.sort_by_key(|c| c.index);
+            (all, vec![], total)
+        } else {
+            BudgetEnforcer::select_chunks(chunks, ctx.budget_tokens, 200)
+        };
 
         // If no chunks selected, return empty
         if selected_chunks.is_empty() {

@@ -3,7 +3,7 @@
  *
  * Resilient SSH connection with:
  * - Exponential backoff reconnection (3s → 6s → 12s → 24s → 30s, max 5 attempts)
- * - SSH keepalive every 30 seconds
+ * - SSH keepalive every 10 seconds
  * - Health check before each command
  * - exec channels only (no persistent shells — avoids PTY accumulation)
  * - Sudo via stdin pipe
@@ -12,7 +12,7 @@
 import { Client } from 'ssh2';
 import { sanitizeError } from './sanitize.js';
 const RECONNECT_DELAYS_MS = [3000, 6000, 12000, 24000, 30000];
-const KEEPALIVE_INTERVAL_MS = 30_000;
+const KEEPALIVE_INTERVAL_MS = 10_000;
 const KEEPALIVE_COUNT_MAX = 3;
 function log(entry) {
     const full = { ts: new Date().toISOString(), ...entry };
@@ -22,6 +22,8 @@ export class SSHConnectionManager {
     client = null;
     state = 'disconnected';
     connectPromise = null;
+    _failedAt = null;
+    _bgRetryTimer = null;
     config;
     constructor(config) {
         this.config = config;
@@ -33,7 +35,7 @@ export class SSHConnectionManager {
             port: this.config.port,
             username: this.config.user,
             password: this.config.password,
-            readyTimeout: 20_000,
+            readyTimeout: 10_000,
             keepaliveInterval: KEEPALIVE_INTERVAL_MS,
             keepaliveCountMax: KEEPALIVE_COUNT_MAX,
         };
@@ -52,14 +54,16 @@ export class SSHConnectionManager {
                 reject(err);
             });
             client.on('close', () => {
-                if (this.state === 'connected') {
+                // Guard by client identity — a late 'close' from an old client
+                // must not wipe the new client created during reconnect.
+                if (this.client === client) {
                     this.state = 'disconnected';
                     this.client = null;
                     log({ level: 'warn', event: 'ssh_closed', host: this.config.host });
                 }
             });
             client.on('end', () => {
-                if (this.state === 'connected') {
+                if (this.client === client) {
                     this.state = 'disconnected';
                     this.client = null;
                     log({ level: 'warn', event: 'ssh_ended', host: this.config.host });
@@ -91,6 +95,8 @@ export class SSHConnectionManager {
                 const isLast = attempt >= RECONNECT_DELAYS_MS.length;
                 if (isLast) {
                     this.state = 'failed';
+                    this._failedAt = Date.now();
+                    this._scheduleBackgroundRetry();
                     throw new Error(`SSH connection failed after ${attempt + 1} attempts: ${sanitizeError(err)}`);
                 }
                 const delay = RECONNECT_DELAYS_MS[attempt];
@@ -117,12 +123,32 @@ export class SSHConnectionManager {
         return this.client;
     }
     async close() {
+        if (this._bgRetryTimer) {
+            clearTimeout(this._bgRetryTimer);
+            this._bgRetryTimer = null;
+        }
         if (this.client) {
             this.state = 'disconnected';
             this.client.end();
             this.client = null;
             log({ level: 'info', event: 'ssh_disconnected', host: this.config.host });
         }
+    }
+    /** Schedule a background reconnect attempt 30s after entering 'failed' state. */
+    _scheduleBackgroundRetry() {
+        if (this._bgRetryTimer) return; // already scheduled
+        this._bgRetryTimer = setTimeout(async () => {
+            this._bgRetryTimer = null;
+            if (this.state !== 'failed') return; // already recovered
+            log({ level: 'info', event: 'ssh_bg_retry', host: this.config.host });
+            try {
+                this.state = 'disconnected'; // allow connect() to run
+                await this.connect();
+            }
+            catch (_err) {
+                // connect() already logged; if still failed it will reschedule itself
+            }
+        }, 30_000);
     }
     // ─── Command execution ───────────────────────────────────────────────────
     /**
@@ -132,13 +158,18 @@ export class SSHConnectionManager {
     async exec(command) {
         const client = await this.ensureConnected();
         const start = Date.now();
-        return new Promise((resolve, reject) => {
-            const timeoutHandle = setTimeout(() => {
+        let timeoutId;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+                this.state = 'disconnected';
+                this.client = null;
                 reject(new Error(`Command timed out after ${this.config.timeout}ms`));
             }, this.config.timeout);
+        });
+        const execPromise = new Promise((resolve, reject) => {
             client.exec(command, (err, stream) => {
                 if (err) {
-                    clearTimeout(timeoutHandle);
+                    clearTimeout(timeoutId);
                     // Connection may be broken — reset state so next call reconnects
                     this.state = 'disconnected';
                     this.client = null;
@@ -150,7 +181,7 @@ export class SSHConnectionManager {
                 stream.on('data', (chunk) => stdoutChunks.push(chunk));
                 stream.stderr.on('data', (chunk) => stderrChunks.push(chunk));
                 stream.on('close', (code) => {
-                    clearTimeout(timeoutHandle);
+                    clearTimeout(timeoutId);
                     const exitCode = code ?? -1;
                     let stdout = Buffer.concat(stdoutChunks).toString('utf8');
                     let stderr = Buffer.concat(stderrChunks).toString('utf8');
@@ -169,13 +200,14 @@ export class SSHConnectionManager {
                     resolve({ stdout, stderr, exitCode });
                 });
                 stream.on('error', (err) => {
-                    clearTimeout(timeoutHandle);
+                    clearTimeout(timeoutId);
                     this.state = 'disconnected';
                     this.client = null;
                     reject(new Error(`stream error: ${sanitizeError(err)}`));
                 });
             });
         });
+        return Promise.race([execPromise, timeoutPromise]);
     }
     /**
      * Execute a command with sudo elevation.
@@ -193,13 +225,18 @@ export class SSHConnectionManager {
         const sudoCmd = `sudo -S -p '' ${command}`;
         const client = await this.ensureConnected();
         const start = Date.now();
-        return new Promise((resolve, reject) => {
-            const timeoutHandle = setTimeout(() => {
+        let timeoutId;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+                this.state = 'disconnected';
+                this.client = null;
                 reject(new Error(`sudo command timed out after ${this.config.timeout}ms`));
             }, this.config.timeout);
+        });
+        const execPromise = new Promise((resolve, reject) => {
             client.exec(sudoCmd, (err, stream) => {
                 if (err) {
-                    clearTimeout(timeoutHandle);
+                    clearTimeout(timeoutId);
                     this.state = 'disconnected';
                     this.client = null;
                     reject(new Error(`sudo exec failed: ${sanitizeError(err)}`));
@@ -210,7 +247,7 @@ export class SSHConnectionManager {
                 stream.on('data', (chunk) => stdoutChunks.push(chunk));
                 stream.stderr.on('data', (chunk) => stderrChunks.push(chunk));
                 stream.on('close', (code) => {
-                    clearTimeout(timeoutHandle);
+                    clearTimeout(timeoutId);
                     const exitCode = code ?? -1;
                     let stdout = Buffer.concat(stdoutChunks).toString('utf8');
                     let stderr = Buffer.concat(stderrChunks).toString('utf8');
@@ -231,7 +268,7 @@ export class SSHConnectionManager {
                     resolve({ stdout, stderr, exitCode });
                 });
                 stream.on('error', (err) => {
-                    clearTimeout(timeoutHandle);
+                    clearTimeout(timeoutId);
                     this.state = 'disconnected';
                     this.client = null;
                     reject(new Error(`sudo stream error: ${sanitizeError(err)}`));
@@ -241,6 +278,7 @@ export class SSHConnectionManager {
                 stream.stdin.end();
             });
         });
+        return Promise.race([execPromise, timeoutPromise]);
     }
 }
 // ─── Utilities ──────────────────────────────────────────────────────────────
