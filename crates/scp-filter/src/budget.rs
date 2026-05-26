@@ -328,7 +328,11 @@ mod tests {
         let (selected, dropped, total) = BudgetEnforcer::select_chunks(chunks, 0, 0);
 
         assert_eq!(total, 3);
-        assert_eq!(selected.len(), 3, "unconstrained budget must return all chunks");
+        assert_eq!(
+            selected.len(),
+            3,
+            "unconstrained budget must return all chunks"
+        );
         assert_eq!(dropped.len(), 0);
         // Chunks should be in document order
         assert_eq!(selected[0].index, 0);
