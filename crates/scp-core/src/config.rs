@@ -177,6 +177,20 @@ pub struct ExposureConfig {
     /// Default: `false`.
     #[serde(default)]
     pub search_returns_schema: bool,
+
+    /// When `true`, `inputSchema` is replaced with an empty stub in `tools/list`
+    /// responses to save LLM context tokens. The LLM can call `scp_schema` to
+    /// fetch the full schema on demand before invoking a complex tool.
+    /// Default: `false`.
+    #[serde(default)]
+    pub strip_input_schema: bool,
+
+    /// When set, tool descriptions in `tools/list` wire responses are truncated to
+    /// at most this many UTF-8 characters (with a trailing `…`). The full description
+    /// is always kept in the registry for `scp_search` relevance scoring.
+    /// Default: `None` (no truncation).
+    #[serde(default)]
+    pub max_description_chars: Option<usize>,
 }
 
 fn default_true() -> bool {
@@ -189,6 +203,8 @@ impl Default for ExposureConfig {
             pinned_servers: Vec::new(),
             allow_unlisted_calls: true,
             search_returns_schema: false,
+            strip_input_schema: false,
+            max_description_chars: None,
         }
     }
 }
@@ -227,6 +243,10 @@ pub struct ServerConfig {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Dot-separated JSON key paths to strip from backend responses before
+    /// the filter pipeline runs. Example: ["metadata.managedFields", "metadata.annotations"]
+    #[serde(default)]
+    pub response_field_strip: Vec<String>,
 }
 
 fn default_priority() -> u32 {

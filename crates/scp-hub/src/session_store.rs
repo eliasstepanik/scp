@@ -103,6 +103,10 @@ pub struct Session {
     pub chunk_cache_order: VecDeque<String>,
     /// Total byte size of all cached chunk text (used for 10MB cap enforcement).
     pub chunk_cache_bytes: usize,
+    /// Total number of chunk sets stored across the session lifetime.
+    pub chunks_stored: u64,
+    /// Total number of scp_get_more fetches made across the session lifetime.
+    pub chunks_fetched: u64,
 }
 
 #[allow(dead_code)]
@@ -146,6 +150,8 @@ impl Session {
             chunk_cache: HashMap::new(),
             chunk_cache_order: VecDeque::new(),
             chunk_cache_bytes: 0,
+            chunks_stored: 0,
+            chunks_fetched: 0,
         }
     }
 
@@ -252,6 +258,7 @@ impl Session {
         self.chunk_cache_bytes += new_bytes;
         self.chunk_cache_order.push_back(request_id.clone());
         self.chunk_cache.insert(request_id, chunks);
+        self.chunks_stored += 1;
     }
 
     /// Retrieve cached chunks for a request

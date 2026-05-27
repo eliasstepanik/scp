@@ -84,6 +84,14 @@ allow_unlisted_calls = true
 # Default: false. Enable only if you need schema-aware one-shot tool discovery.
 search_returns_schema = false
 
+# Strip inputSchema from tools/list to save tokens. LLMs can call scp_schema
+# to fetch a schema on demand before calling a tool.
+strip_input_schema = false
+
+# Truncate tool descriptions in tools/list responses (saves tokens).
+# Full descriptions are kept in the registry for search.
+# max_description_chars = 150
+
 # ============================================================================
 # Admin API Configuration
 # ============================================================================

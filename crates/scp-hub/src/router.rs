@@ -1,4 +1,5 @@
 use crate::session_store::Session;
+use crate::tool_cache::ToolCache;
 use scp_core::config::ExposureConfig;
 use scp_core::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, RequestId};
 use scp_filter::dedup::DeliveryLog;
@@ -7,6 +8,9 @@ use scp_index::{ToolEntry, ToolRegistry};
 use scp_pool::PoolManager;
 use scp_transport::http_server::HttpServerTransport;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::sync::{broadcast, RwLock};
@@ -49,6 +53,12 @@ pub struct Router {
     /// Sender used to subscribe to the shutdown signal inside `call_backend`.
     /// When cancelled, in-flight backend calls are aborted immediately.
     shutdown_tx: broadcast::Sender<()>,
+    /// Optional per-server tool cache. When set, `tools/list` returns cached
+    /// entries for warm servers and skips the backend fanout for those servers.
+    tool_cache: Option<Arc<RwLock<ToolCache>>>,
+    /// Per-session cache of serialized tools/list responses.
+    /// Key = session_id, Value = (registry_hash, serialized_response)
+    tools_list_cache: Arc<RwLock<HashMap<String, (u64, Arc<String>)>>>,
 }
 
 impl Router {
@@ -80,6 +90,8 @@ impl Router {
             always_include,
             max_tools_exposed,
             shutdown_tx,
+            tool_cache: None,
+            tools_list_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -87,6 +99,18 @@ impl Router {
     /// Create a new router with a custom response size limit
     pub fn with_max_response_size(mut self, max_response_size_bytes: Option<usize>) -> Self {
         self.max_response_size_bytes = max_response_size_bytes;
+        self
+    }
+
+    /// Attach a shared `ToolCache` to this router.
+    ///
+    /// When set, `tools/list` will return cached entries for servers whose cache
+    /// has not yet expired, skipping the backend HTTP/stdio fanout for those servers.
+    /// After a successful backend call the result is written back into the cache.
+    /// `tools/list_changed` notifications invalidate the cache for the affected server.
+    #[allow(dead_code)]
+    pub fn with_tool_cache(mut self, cache: Arc<RwLock<ToolCache>>) -> Self {
+        self.tool_cache = Some(cache);
         self
     }
 
@@ -222,6 +246,20 @@ impl Router {
                     "required": ["query"]
                 }
             }),
+            json!({
+                "name": "scp_schema",
+                "description": "Returns the full inputSchema for a named tool. Use this before calling a complex tool when schemas are stripped from tools/list.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "description": "The qualified name of the tool (e.g. 'portainer_dockerProxy')"
+                        }
+                    },
+                    "required": ["tool_name"]
+                }
+            }),
         ];
 
         // Fan-out to all available backend servers in parallel
@@ -239,10 +277,40 @@ impl Router {
 
         // Each handle resolves to (server_name, Result<response_body, error_string>)
         let mut handles: Vec<tokio::task::JoinHandle<(String, Result<Value, String>)>> = Vec::new();
+
+        // Servers that were served from the cache — collected before spawning fanout tasks.
+        // Each entry has the same shape as the final `backend_tools` vec.
+        let mut backend_tools: Vec<(String, String, Vec<Value>, Vec<ToolEntry>)> = Vec::new();
+
         for (server_name, config, state) in server_configs {
             use scp_pool::lifecycle::ServerState;
             if !matches!(state, ServerState::Warm | ServerState::Hot) {
                 continue;
+            }
+
+            // Check the tool cache before spawning a backend call.
+            if let Some(cache) = &self.tool_cache {
+                if let Some(cached_entries) = cache.read().await.get(&server_name) {
+                    debug!("tool_cache hit for server {}", server_name);
+                    let display_prefix = prefix_map
+                        .get(&server_name)
+                        .cloned()
+                        .unwrap_or_else(|| server_name.clone());
+                    // Reconstruct the raw tools_array from the cached ToolEntry list so
+                    // the exposure-filter passes below can work on the same data shape.
+                    let tools_array: Vec<Value> = cached_entries
+                        .iter()
+                        .map(|e| {
+                            json!({
+                                "name": e.original_name,
+                                "description": e.description,
+                                "inputSchema": e.input_schema,
+                            })
+                        })
+                        .collect();
+                    backend_tools.push((server_name, display_prefix, tools_array, cached_entries));
+                    continue; // skip backend fanout for this server
+                }
             }
 
             if let Some(url) = config.url.clone() {
@@ -308,9 +376,6 @@ impl Router {
             }
         }
 
-        // Collect (server_name, display_prefix, raw_tools_array, entries) before updating registry
-        let mut backend_tools: Vec<(String, String, Vec<Value>, Vec<ToolEntry>)> = Vec::new();
-
         let results = futures::future::join_all(handles).await;
         for (server_name, result) in results.into_iter().flatten() {
             match result {
@@ -350,6 +415,12 @@ impl Router {
                             })
                         })
                         .collect();
+
+                    // Populate the tool cache with the fresh backend results.
+                    if let Some(cache) = &self.tool_cache {
+                        cache.write().await.set(&server_name, entries.clone());
+                        debug!("tool_cache populated for server {}", server_name);
+                    }
 
                     backend_tools.push((server_name, display_prefix, tools_array, entries));
                 }
@@ -408,6 +479,20 @@ impl Router {
                         // structuredContent, so advertising outputSchema causes MCP clients
                         // (e.g. the TypeScript SDK) to reject the response as invalid.
                         obj.remove("outputSchema");
+                        if self.exposure.strip_input_schema {
+                            obj.insert(
+                                "inputSchema".to_string(),
+                                json!({"type": "object", "properties": {}}),
+                            );
+                        }
+                        if let Some(max_chars) = self.exposure.max_description_chars {
+                            if let Some(desc) = obj.get("description").and_then(|d| d.as_str()) {
+                                if desc.len() > max_chars {
+                                    let truncated = format!("{}…", &desc[..max_chars]);
+                                    obj.insert("description".to_string(), json!(truncated));
+                                }
+                            }
+                        }
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -448,6 +533,20 @@ impl Router {
                         // structuredContent, so advertising outputSchema causes MCP clients
                         // (e.g. the TypeScript SDK) to reject the response as invalid.
                         obj.remove("outputSchema");
+                        if self.exposure.strip_input_schema {
+                            obj.insert(
+                                "inputSchema".to_string(),
+                                json!({"type": "object", "properties": {}}),
+                            );
+                        }
+                        if let Some(max_chars) = self.exposure.max_description_chars {
+                            if let Some(desc) = obj.get("description").and_then(|d| d.as_str()) {
+                                if desc.len() > max_chars {
+                                    let truncated = format!("{}…", &desc[..max_chars]);
+                                    obj.insert("description".to_string(), json!(truncated));
+                                }
+                            }
+                        }
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -482,6 +581,20 @@ impl Router {
                         // structuredContent, so advertising outputSchema causes MCP clients
                         // (e.g. the TypeScript SDK) to reject the response as invalid.
                         obj.remove("outputSchema");
+                        if self.exposure.strip_input_schema {
+                            obj.insert(
+                                "inputSchema".to_string(),
+                                json!({"type": "object", "properties": {}}),
+                            );
+                        }
+                        if let Some(max_chars) = self.exposure.max_description_chars {
+                            if let Some(desc) = obj.get("description").and_then(|d| d.as_str()) {
+                                if desc.len() > max_chars {
+                                    let truncated = format!("{}…", &desc[..max_chars]);
+                                    obj.insert("description".to_string(), json!(truncated));
+                                }
+                            }
+                        }
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -834,18 +947,37 @@ impl Router {
             }
             "scp_budget" => {
                 let text = if self.request_token_budget == 0 {
-                    "Budget: unlimited (no token cap configured)".to_string()
-                } else {
-                    let (remaining, total) = if let Some(sess) = &session {
+                    let (chunks_stored, chunks_fetched) = if let Some(sess) = &session {
                         let s = sess.lock().unwrap_or_else(|e| e.into_inner());
-                        (s.token_budget_remaining, self.request_token_budget)
+                        (s.chunks_stored, s.chunks_fetched)
                     } else {
-                        (self.request_token_budget, self.request_token_budget)
+                        (0, 0)
                     };
+                    serde_json::to_string(&json!({
+                        "budget": "unlimited",
+                        "chunks_stored": chunks_stored,
+                        "chunks_fetched": chunks_fetched
+                    }))
+                    .unwrap_or_else(|_| "Budget: unlimited (no token cap configured)".to_string())
+                } else {
+                    let (remaining, total, chunks_stored, chunks_fetched) =
+                        if let Some(sess) = &session {
+                            let s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                            (
+                                s.token_budget_remaining,
+                                self.request_token_budget,
+                                s.chunks_stored,
+                                s.chunks_fetched,
+                            )
+                        } else {
+                            (self.request_token_budget, self.request_token_budget, 0, 0)
+                        };
                     serde_json::to_string(&json!({
                         "remaining": remaining,
                         "total": total,
-                        "used": total.saturating_sub(remaining)
+                        "used": total.saturating_sub(remaining),
+                        "chunks_stored": chunks_stored,
+                        "chunks_fetched": chunks_fetched
                     }))
                     .unwrap_or_default()
                 };
@@ -906,7 +1038,7 @@ impl Router {
                     .unwrap_or(10) as usize;
 
                 let (items, total) = if let Some(sess) = &session {
-                    let s = sess.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut s = sess.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(chunks) = s.get_chunks(&request_id) {
                         let total = chunks.len();
                         let slice: Vec<String> = chunks
@@ -915,6 +1047,7 @@ impl Router {
                             .take(limit)
                             .map(|c| c.text.clone())
                             .collect();
+                        s.chunks_fetched += 1;
                         (slice, total)
                     } else {
                         (vec![], 0)
@@ -1016,6 +1149,40 @@ impl Router {
                     })),
                     error: None,
                 };
+            }
+            "scp_schema" => {
+                let args = request.params.as_ref().and_then(|p| p.get("arguments"));
+                let tool_name_arg = args
+                    .and_then(|a| a.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let registry = self.tool_registry.read().await;
+                match registry.lookup(tool_name_arg) {
+                    Some(entry) => {
+                        let schema = entry.input_schema.clone();
+                        drop(registry);
+                        return JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id.clone(),
+                            result: Some(json!({
+                                "content": [{"type": "text", "text": schema.to_string()}]
+                            })),
+                            error: None,
+                        };
+                    }
+                    None => {
+                        drop(registry);
+                        return JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id.clone(),
+                            result: Some(json!({
+                                "content": [{"type": "text", "text": format!("Tool '{}' not found in registry.", tool_name_arg)}],
+                                "isError": true
+                            })),
+                            error: None,
+                        };
+                    }
+                }
             }
             _ => {}
         }
@@ -1605,6 +1772,8 @@ mod tests {
             pinned_servers: pinned_servers.into_iter().map(|s| s.to_string()).collect(),
             allow_unlisted_calls: true,
             search_returns_schema: false,
+            strip_input_schema: false,
+            max_description_chars: None,
         };
         let (shutdown_tx, _) = broadcast::channel(1);
         Router::new(
@@ -1768,6 +1937,8 @@ mod tests {
                 pinned_servers: vec![],
                 allow_unlisted_calls: true,
                 search_returns_schema: false,
+                strip_input_schema: false,
+                max_description_chars: None,
             },
             vec![],
             50,
@@ -1818,6 +1989,8 @@ mod tests {
                 pinned_servers: vec![],
                 allow_unlisted_calls: true,
                 search_returns_schema: true,
+                strip_input_schema: false,
+                max_description_chars: None,
             },
             vec![],
             50,

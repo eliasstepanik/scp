@@ -148,18 +148,24 @@ async fn main() -> Result<()> {
     // Create a shared shutdown signal — created before Router so we can pass a clone in.
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 
+    // Create tool cache — TTL defaults to 300 s (5 min) with no config key yet.
+    let tool_cache = Arc::new(RwLock::new(tool_cache::ToolCache::new(300)));
+
     // Create router
-    let router = Arc::new(router::Router::new(
-        pool_manager.clone(),
-        tool_registry.clone(),
-        config.hub.defaults.fanout_timeout_secs,
-        config.hub.defaults.request_token_budget,
-        filter_pipeline,
-        config.hub.defaults.exposure.clone(),
-        config.tool_index.always_include.clone(),
-        config.hub.defaults.max_tools_exposed,
-        shutdown_tx.clone(),
-    ));
+    let router = Arc::new(
+        router::Router::new(
+            pool_manager.clone(),
+            tool_registry.clone(),
+            config.hub.defaults.fanout_timeout_secs,
+            config.hub.defaults.request_token_budget,
+            filter_pipeline,
+            config.hub.defaults.exposure.clone(),
+            config.tool_index.always_include.clone(),
+            config.hub.defaults.max_tools_exposed,
+            shutdown_tx.clone(),
+        )
+        .with_tool_cache(tool_cache),
+    );
 
     // Start admin API with graceful shutdown
     let admin_state = AdminState {
