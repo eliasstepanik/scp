@@ -404,6 +404,10 @@ impl Router {
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
                         obj.insert("name".to_string(), json!(display_qname));
+                        // Strip outputSchema: the hub always returns text content, not
+                        // structuredContent, so advertising outputSchema causes MCP clients
+                        // (e.g. the TypeScript SDK) to reject the response as invalid.
+                        obj.remove("outputSchema");
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -440,6 +444,10 @@ impl Router {
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
                         obj.insert("name".to_string(), json!(display_qname));
+                        // Strip outputSchema: the hub always returns text content, not
+                        // structuredContent, so advertising outputSchema causes MCP clients
+                        // (e.g. the TypeScript SDK) to reject the response as invalid.
+                        obj.remove("outputSchema");
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -470,6 +478,10 @@ impl Router {
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
                         obj.insert("name".to_string(), json!(display_qname));
+                        // Strip outputSchema: the hub always returns text content, not
+                        // structuredContent, so advertising outputSchema causes MCP clients
+                        // (e.g. the TypeScript SDK) to reject the response as invalid.
+                        obj.remove("outputSchema");
                     }
                     exposed_backend_tools.push(tool_obj);
                 }
@@ -525,6 +537,7 @@ impl Router {
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
                         obj.insert("name".to_string(), json!(qualified));
+                        obj.remove("outputSchema");
                     }
                     exposed.push(tool_obj);
                 }
@@ -561,6 +574,7 @@ impl Router {
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
                         obj.insert("name".to_string(), json!(qualified));
+                        obj.remove("outputSchema");
                     }
                     exposed.push(tool_obj);
                 }
@@ -590,6 +604,7 @@ impl Router {
                     let mut tool_obj = tool.clone();
                     if let Some(obj) = tool_obj.as_object_mut() {
                         obj.insert("name".to_string(), json!(qualified));
+                        obj.remove("outputSchema");
                     }
                     exposed.push(tool_obj);
                 }
