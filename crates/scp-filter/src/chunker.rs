@@ -38,6 +38,8 @@ pub enum ChunkStrategy {
         /// Overlap between windows.
         overlap: usize,
     },
+    /// Split on sentence boundaries (period, ?, !).
+    Sentence,
 }
 
 /// Splits text content into chunks based on a selected strategy.
@@ -69,6 +71,7 @@ impl ChunkSplitter {
             ChunkStrategy::FixedSize { tokens, overlap } => {
                 self.split_fixed_size(text, *tokens, *overlap)
             }
+            ChunkStrategy::Sentence => self.split_sentence(text),
         }
     }
 
@@ -86,7 +89,9 @@ impl ChunkSplitter {
     }
 
     /// Choose the best strategy for a given text automatically.
-    /// Heuristic: if text has \n\n → Paragraph; else if >5 lines → Line; else FixedSize(200, 20)
+    /// Heuristic: if text has \n\n → Paragraph; else if >5 lines → Line;
+    /// else if text looks like prose (contains sentence-ending punctuation) → Sentence;
+    /// else FixedSize(200, 20)
     pub fn auto(text: &str) -> Self {
         if text.contains("\n\n") {
             Self::new(ChunkStrategy::Paragraph)
@@ -94,6 +99,8 @@ impl ChunkSplitter {
             let line_count = text.lines().count();
             if line_count > 5 {
                 Self::new(ChunkStrategy::Line)
+            } else if text.contains(". ") || text.contains("? ") || text.contains("! ") {
+                Self::new(ChunkStrategy::Sentence)
             } else {
                 Self::new(ChunkStrategy::FixedSize {
                     tokens: 200,
@@ -128,6 +135,36 @@ impl ChunkSplitter {
                     Some(trimmed.to_string())
                 }
             })
+            .enumerate()
+            .map(|(index, text)| Chunk::new(text, index))
+            .collect()
+    }
+
+    fn split_sentence(&self, text: &str) -> Vec<Chunk> {
+        let mut chunks = Vec::new();
+        let mut current = String::new();
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            current.push(chars[i]);
+            if (chars[i] == '.' || chars[i] == '?' || chars[i] == '!')
+                && i + 1 < chars.len()
+                && (chars[i + 1] == ' ' || chars[i + 1] == '\n')
+            {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    chunks.push(trimmed);
+                }
+                current = String::new();
+            }
+            i += 1;
+        }
+        let remainder = current.trim().to_string();
+        if !remainder.is_empty() {
+            chunks.push(remainder);
+        }
+        chunks
+            .into_iter()
             .enumerate()
             .map(|(index, text)| Chunk::new(text, index))
             .collect()
@@ -342,5 +379,42 @@ mod tests {
         let splitter = ChunkSplitter::auto(text);
         let chunks = splitter.split(text);
         assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "short");
+    }
+
+    #[test]
+    fn test_sentence_splitting() {
+        let text = "Hello world. This is a test. Final sentence!";
+        let splitter = ChunkSplitter::new(ChunkStrategy::Sentence);
+        let chunks = splitter.split(text);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks[0].text.contains("Hello world"));
+        assert!(chunks[1].text.contains("This is a test"));
+        assert!(chunks[2].text.contains("Final sentence"));
+    }
+
+    #[test]
+    fn test_sentence_splitting_question_marks() {
+        let text = "Are you there? Yes I am. Great!";
+        let splitter = ChunkSplitter::new(ChunkStrategy::Sentence);
+        let chunks = splitter.split(text);
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn test_sentence_splitting_no_trailing_punctuation() {
+        let text = "Just one sentence without end";
+        let splitter = ChunkSplitter::new(ChunkStrategy::Sentence);
+        let chunks = splitter.split(text);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "Just one sentence without end");
+    }
+
+    #[test]
+    fn test_auto_strategy_prose() {
+        let text = "Hello world. This is a test. Final sentence!";
+        let splitter = ChunkSplitter::auto(text);
+        let chunks = splitter.split(text);
+        assert_eq!(chunks.len(), 3);
     }
 }

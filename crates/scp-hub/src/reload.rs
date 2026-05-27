@@ -175,6 +175,7 @@ mod tests {
                 retries: Default::default(),
                 env: Default::default(),
                 headers: Default::default(),
+                response_field_strip: vec![],
             });
         }
 

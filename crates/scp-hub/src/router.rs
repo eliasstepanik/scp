@@ -114,6 +114,16 @@ impl Router {
         self
     }
 
+    #[allow(dead_code)]
+    /// Override the per-session tools/list response cache (useful for testing).
+    pub fn with_tools_list_cache(
+        mut self,
+        cache: Arc<RwLock<HashMap<String, (u64, Arc<String>)>>>,
+    ) -> Self {
+        self.tools_list_cache = cache;
+        self
+    }
+
     /// Perform an eager tools/list fanout to populate the registry.
     ///
     /// Returns `(tool_count, server_count)` where `server_count` is the number of
@@ -121,7 +131,7 @@ impl Router {
     /// skipped; errors from individual backends are logged but do not fail the call.
     pub async fn discover_tools(&self) -> (usize, usize) {
         let dummy_req = JsonRpcRequest::new(RequestId::Null, "tools/list".to_string(), None);
-        let response = self.handle_tools_list(&dummy_req).await;
+        let response = self.handle_tools_list(&dummy_req, None).await;
 
         // NOTE: handle_tools_list applies the exposure filter to its return value,
         // so the response tool count reflects only pinned/exposed tools.
@@ -154,9 +164,15 @@ impl Router {
         request: JsonRpcRequest,
         session: Option<Arc<Mutex<Session>>>,
     ) -> JsonRpcResponse {
+        let session_id = if let Some(ref s) = session {
+            Some(s.lock().unwrap_or_else(|e| e.into_inner()).id.clone())
+        } else {
+            None
+        };
+
         match request.method.as_str() {
             "ping" => self.handle_ping(&request),
-            "tools/list" => self.handle_tools_list(&request).await,
+            "tools/list" => self.handle_tools_list(&request, session_id).await,
             "tools/call" => self.handle_tools_call(&request, session).await,
             "initialize" => self.handle_initialize(&request).await,
             _ => self.handle_unknown(&request),
@@ -175,8 +191,27 @@ impl Router {
         }
     }
 
+    /// Compute a stable hash of the tool list for cache invalidation.
+    fn compute_registry_hash(tools: &[Value]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        tools.len().hash(&mut hasher);
+        let mut names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+            .collect();
+        names.sort_unstable();
+        for name in names {
+            name.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     /// Handle tools/list request (fan-out to all servers)
-    async fn handle_tools_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+    async fn handle_tools_list(
+        &self,
+        request: &JsonRpcRequest,
+        session_id: Option<String>,
+    ) -> JsonRpcResponse {
         debug!("Handling tools/list request");
 
         // SCP extension tools — always present and always first
@@ -601,14 +636,75 @@ impl Router {
             }
         }
 
+        // Dedup pass: when enabled, keep only the first occurrence of each
+        // (original_name, inputSchema) hash across backends. Duplicates are
+        // still callable via their qualified name (allow_unlisted_calls).
+        let exposed_backend_tools = if self.exposure.deduplicate_identical_schemas {
+            let mut seen: HashMap<u64, String> = HashMap::new();
+            let mut deduped: Vec<Value> = Vec::new();
+            for tool in exposed_backend_tools {
+                let qualified_name = tool
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                // Derive the original (bare) name by stripping the prefix before the first '/'.
+                let original_name = qualified_name
+                    .find('/')
+                    .map(|pos| &qualified_name[pos + 1..])
+                    .unwrap_or(qualified_name);
+                let input_schema = tool
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let hash = Self::hash_tool_schema(original_name, &input_schema);
+                if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(hash) {
+                    e.insert(qualified_name.to_string());
+                    deduped.push(tool);
+                }
+                // else: skip — identical schema already emitted by a higher-priority backend
+            }
+            deduped
+        } else {
+            exposed_backend_tools
+        };
+
         // Build final tools list: SCP extension tools (uncapped) + filtered backend tools
         let mut all_tools: Vec<Value> = extension_tools;
         all_tools.extend(exposed_backend_tools);
 
+        // Cache check: if the registry hash matches, return the cached serialized response.
+        let new_hash = Self::compute_registry_hash(&all_tools);
+
+        if let Some(ref sid) = session_id {
+            let cache = self.tools_list_cache.read().await;
+            if let Some((cached_hash, cached_response)) = cache.get(sid) {
+                if *cached_hash == new_hash {
+                    if let Ok(v) = serde_json::from_str::<Value>(cached_response.as_ref()) {
+                        return JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id.clone(),
+                            result: Some(v),
+                            error: None,
+                        };
+                    }
+                }
+            }
+        }
+
+        // Normal path: serialize, cache, and return.
+        let result_json = json!({ "tools": all_tools });
+
+        if let Some(ref sid) = session_id {
+            if let Ok(serialized) = serde_json::to_string(&result_json) {
+                let mut cache = self.tools_list_cache.write().await;
+                cache.insert(sid.clone(), (new_hash, Arc::new(serialized)));
+            }
+        }
+
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id.clone(),
-            result: Some(json!({ "tools": all_tools })),
+            result: Some(result_json),
             error: None,
         }
     }
@@ -826,10 +922,21 @@ impl Router {
                 .await
             {
                 Ok(response_body) => {
-                    let result = response_body
+                    let mut result = response_body
                         .get("result")
                         .cloned()
                         .unwrap_or(response_body);
+
+                    // Strip configured fields before the filter pipeline runs
+                    let field_strip_paths = self
+                        .pool_manager
+                        .get_server_config(&server_name)
+                        .await
+                        .map(|c| c.response_field_strip)
+                        .unwrap_or_default();
+                    if !field_strip_paths.is_empty() {
+                        scp_filter::field_stripper::strip_fields(&mut result, &field_strip_paths);
+                    }
 
                     // Run filter pipeline on backend response
                     let content_value = result
@@ -1195,7 +1302,7 @@ impl Router {
             if registry.tool_count() == 0 {
                 drop(registry);
                 let list_req = JsonRpcRequest::new(RequestId::Null, "tools/list".to_string(), None);
-                let _ = self.handle_tools_list(&list_req).await;
+                let _ = self.handle_tools_list(&list_req, None).await;
             }
         }
 
@@ -1465,20 +1572,54 @@ impl Router {
             .unwrap_or("2024-11-05")
             .to_string();
 
-        // For now, return basic capabilities (full implementation in P1.E.5)
+        let mut result = json!({
+            "protocolVersion": protocol_version,
+            "capabilities": {},
+            "serverInfo": {
+                "name": "scp",
+                "version": "0.2.0"
+            }
+        });
+
+        if self.exposure.inject_tool_catalog {
+            let catalog = self.build_tool_catalog().await;
+            if !catalog.is_empty() {
+                result["instructions"] = serde_json::Value::String(catalog);
+            }
+        }
+
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id.clone(),
-            result: Some(json!({
-                "protocolVersion": protocol_version,
-                "capabilities": {},
-                "serverInfo": {
-                    "name": "scp",
-                    "version": "0.2.0"
-                }
-            })),
+            result: Some(result),
             error: None,
         }
+    }
+
+    /// Build a compact markdown catalog of all registered tools for injection
+    /// into the MCP `initialize` response `instructions` field.
+    async fn build_tool_catalog(&self) -> String {
+        let registry = self.tool_registry.read().await;
+        let tools = registry.all_tools();
+
+        if tools.is_empty() {
+            return String::new();
+        }
+
+        let mut lines = vec!["# Available Tools\n".to_string()];
+
+        for entry in tools.iter() {
+            let name = &entry.qualified_name;
+            let desc = entry.description.as_deref().unwrap_or("No description");
+            let short_desc = if desc.len() > 80 {
+                format!("{}…", &desc[..80])
+            } else {
+                desc.to_string()
+            };
+            lines.push(format!("- **{}**: {}", name, short_desc));
+        }
+
+        lines.join("\n")
     }
 
     /// Handle unknown request
@@ -1489,6 +1630,16 @@ impl Router {
             JsonRpcError::METHOD_NOT_FOUND,
             format!("Method not found: {}", request.method),
         )
+    }
+
+    /// Compute a stable hash over `(original_name, inputSchema)` for deduplication.
+    fn hash_tool_schema(original_name: &str, input_schema: &serde_json::Value) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        original_name.hash(&mut hasher);
+        // Canonical JSON for stable hashing
+        let schema_str = serde_json::to_string(input_schema).unwrap_or_default();
+        schema_str.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Create an error response
@@ -1774,6 +1925,8 @@ mod tests {
             search_returns_schema: false,
             strip_input_schema: false,
             max_description_chars: None,
+            deduplicate_identical_schemas: false,
+            inject_tool_catalog: false,
         };
         let (shutdown_tx, _) = broadcast::channel(1);
         Router::new(
@@ -1939,6 +2092,8 @@ mod tests {
                 search_returns_schema: false,
                 strip_input_schema: false,
                 max_description_chars: None,
+                deduplicate_identical_schemas: false,
+                inject_tool_catalog: false,
             },
             vec![],
             50,
@@ -1991,6 +2146,8 @@ mod tests {
                 search_returns_schema: true,
                 strip_input_schema: false,
                 max_description_chars: None,
+                deduplicate_identical_schemas: false,
+                inject_tool_catalog: false,
             },
             vec![],
             50,

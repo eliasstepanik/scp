@@ -7,6 +7,8 @@
 
 /// Budget enforcement — truncates responses to fit within token budgets.
 pub mod budget;
+/// JSON field stripping for reducing response payload size before filtering.
+pub mod field_stripper;
 /// Content chunking strategies and chunk splitting.
 pub mod chunker;
 /// Content type classification and routing.

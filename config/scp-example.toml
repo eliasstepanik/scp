@@ -88,9 +88,16 @@ search_returns_schema = false
 # to fetch a schema on demand before calling a tool.
 strip_input_schema = false
 
+# Deduplicate tools with identical schemas across multiple backends
+# (others remain callable via their full qualified name)
+deduplicate_identical_schemas = false
+
 # Truncate tool descriptions in tools/list responses (saves tokens).
 # Full descriptions are kept in the registry for search.
 # max_description_chars = 150
+
+# Inject compact tool catalog as MCP instructions field on initialize
+inject_tool_catalog = false
 
 # ============================================================================
 # Admin API Configuration
@@ -176,6 +183,9 @@ tags = ["example", "local"]
 
 # Enable or disable this server
 enabled = true
+
+# Strip verbose fields from responses before processing (dot-separated key paths)
+# response_field_strip = ["metadata.managedFields", "metadata.annotations"]
 
 # Timeouts
 [servers.timeouts]

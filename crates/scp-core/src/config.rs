@@ -191,6 +191,18 @@ pub struct ExposureConfig {
     /// Default: `None` (no truncation).
     #[serde(default)]
     pub max_description_chars: Option<usize>,
+
+    /// When true, tools with identical (original_name, inputSchema) across multiple
+    /// backends are deduplicated — only the highest-priority backend's tool is emitted.
+    /// The others remain callable via their qualified name (allow_unlisted_calls).
+    #[serde(default)]
+    pub deduplicate_identical_schemas: bool,
+
+    /// When true, inject a compact tool catalog as the `instructions` field
+    /// in the MCP initialize response. Reduces per-turn token overhead by
+    /// giving the LLM a one-time reference.
+    #[serde(default)]
+    pub inject_tool_catalog: bool,
 }
 
 fn default_true() -> bool {
@@ -205,6 +217,8 @@ impl Default for ExposureConfig {
             search_returns_schema: false,
             strip_input_schema: false,
             max_description_chars: None,
+            deduplicate_identical_schemas: false,
+            inject_tool_catalog: false,
         }
     }
 }

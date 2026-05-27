@@ -227,6 +227,7 @@ mod tests {
             retries: Default::default(),
             env: Default::default(),
             headers: Default::default(),
+            response_field_strip: vec![],
         };
 
         let result = manager.add_server(config).await;
