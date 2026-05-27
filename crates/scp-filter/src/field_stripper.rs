@@ -76,7 +76,8 @@ mod tests {
 
     #[test]
     fn test_strip_multiple_paths() {
-        let mut val = json!({"metadata": {"managedFields": ["x"], "annotations": {"k": "v"}, "name": "foo"}});
+        let mut val =
+            json!({"metadata": {"managedFields": ["x"], "annotations": {"k": "v"}, "name": "foo"}});
         strip_fields(
             &mut val,
             &[

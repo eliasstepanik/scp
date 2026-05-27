@@ -7,8 +7,6 @@
 
 /// Budget enforcement — truncates responses to fit within token budgets.
 pub mod budget;
-/// JSON field stripping for reducing response payload size before filtering.
-pub mod field_stripper;
 /// Content chunking strategies and chunk splitting.
 pub mod chunker;
 /// Content type classification and routing.
@@ -19,6 +17,8 @@ pub mod dedup;
 pub mod delivery_logger;
 /// Embedding-based chunk scoring using cosine similarity.
 pub mod embedding_scorer;
+/// JSON field stripping for reducing response payload size before filtering.
+pub mod field_stripper;
 /// Main filtering pipeline orchestrating all stages.
 pub mod pipeline;
 /// Progressive disclosure annotation for filtered content.

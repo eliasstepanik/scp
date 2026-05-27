@@ -8,8 +8,8 @@ use scp_index::{ToolEntry, ToolRegistry};
 use scp_pool::PoolManager;
 use scp_transport::http_server::HttpServerTransport;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -38,6 +38,9 @@ pub enum RouterError {
     InvalidRequest(String),
 }
 
+/// Cache mapping session_id → (registry_hash, serialized_response).
+type ToolsListCache = Arc<RwLock<HashMap<String, (u64, Arc<String>)>>>;
+
 /// Router handles request routing and fan-out
 #[allow(dead_code)]
 pub struct Router {
@@ -58,7 +61,7 @@ pub struct Router {
     tool_cache: Option<Arc<RwLock<ToolCache>>>,
     /// Per-session cache of serialized tools/list responses.
     /// Key = session_id, Value = (registry_hash, serialized_response)
-    tools_list_cache: Arc<RwLock<HashMap<String, (u64, Arc<String>)>>>,
+    tools_list_cache: ToolsListCache,
 }
 
 impl Router {
@@ -116,10 +119,7 @@ impl Router {
 
     #[allow(dead_code)]
     /// Override the per-session tools/list response cache (useful for testing).
-    pub fn with_tools_list_cache(
-        mut self,
-        cache: Arc<RwLock<HashMap<String, (u64, Arc<String>)>>>,
-    ) -> Self {
+    pub fn with_tools_list_cache(mut self, cache: ToolsListCache) -> Self {
         self.tools_list_cache = cache;
         self
     }
@@ -164,11 +164,9 @@ impl Router {
         request: JsonRpcRequest,
         session: Option<Arc<Mutex<Session>>>,
     ) -> JsonRpcResponse {
-        let session_id = if let Some(ref s) = session {
-            Some(s.lock().unwrap_or_else(|e| e.into_inner()).id.clone())
-        } else {
-            None
-        };
+        let session_id = session
+            .as_ref()
+            .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).id.clone());
 
         match request.method.as_str() {
             "ping" => self.handle_ping(&request),
@@ -643,10 +641,7 @@ impl Router {
             let mut seen: HashMap<u64, String> = HashMap::new();
             let mut deduped: Vec<Value> = Vec::new();
             for tool in exposed_backend_tools {
-                let qualified_name = tool
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let qualified_name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 // Derive the original (bare) name by stripping the prefix before the first '/'.
                 let original_name = qualified_name
                     .find('/')
