@@ -481,6 +481,214 @@ SCP is organized as a Rust Cargo workspace with 7 crates:
 
 ---
 
+## Token Reduction Features
+
+SCP includes a suite of opt-in features (all disabled by default) that reduce the token footprint of `tools/list` responses, filter-pipeline output, and internal serialization overhead. Enable only what you need — each feature can be toggled independently in `scp.toml`.
+
+**Quick reference:**
+
+| ID | Name | Config key | Scope |
+|----|------|-----------|-------|
+| TR-1 | Tool Cache | `tool_cache_ttl_secs` | `[hub]` |
+| TR-2 | Strip Input Schema | `strip_input_schema` | `[hub.defaults.exposure]` |
+| TR-3 | scp_schema tool | auto-enabled with TR-2 | built-in |
+| TR-4 | Max Description Chars | `max_description_chars` | `[hub.defaults.exposure]` |
+| TR-5 | Chunk Usage Tracking | — | `scp_budget` response |
+| TR-6 | Response Field Strip | `response_field_strip` | `[[servers]]` |
+| TR-7 | tools/list Hash Cache | automatic | session-scoped |
+| TR-8 | Schema Deduplication | `deduplicate_identical_schemas` | `[hub.defaults.exposure]` |
+| TR-9 | Sentence-level Chunking | automatic | filter pipeline |
+| TR-10 | Tool Catalog Injection | `inject_tool_catalog` | `[hub.defaults.exposure]` |
+
+---
+
+### TR-1: Tool Cache
+
+`tools/list` responses from each backend are cached per-server with a configurable TTL. On a cache hit SCP returns the cached list immediately, skipping the full backend fanout. This is especially valuable with many slow backends or high-frequency reconnects.
+
+Configured in `[hub]`:
+
+```toml
+[hub]
+tool_cache_ttl_secs = 300   # default; set to 0 to disable caching
+```
+
+The cache is invalidated on config hot-reload or when a backend reconnects.
+
+---
+
+### TR-2: Strip Input Schema
+
+When enabled, the full `inputSchema` JSON object for every tool is replaced with a minimal placeholder `{"type":"object","properties":{}}` in the `tools/list` wire response. The full schema is **not** discarded — it is kept in the internal tool registry and used for routing, validation, and the `scp_schema` companion tool (TR-3).
+
+Typical saving: **1–5 KB per tool**, significant when a session lists dozens of tools.
+
+Configured in `[hub.defaults.exposure]`:
+
+```toml
+[hub.defaults.exposure]
+strip_input_schema = true
+```
+
+---
+
+### TR-3: scp_schema Tool
+
+A built-in extension tool that lets the model retrieve a tool's full `inputSchema` on demand. This is the companion to TR-2: strip the schemas from `tools/list` to save tokens on every list response, then call `scp_schema` only when the model is actually about to invoke a tool and needs the full parameter spec.
+
+**Usage** — call with a single argument:
+
+```json
+{ "tool_name": "<qualified_tool_name>" }
+```
+
+`scp_schema` is automatically available whenever `strip_input_schema = true`. It also works independently when schemas are not stripped (useful for inspecting schemas without re-listing all tools).
+
+---
+
+### TR-4: Max Description Chars
+
+Truncates tool descriptions in the `tools/list` wire response to at most N characters, appending `…` if the description was shortened. The full description is kept in the internal registry and is unaffected for routing or scoring purposes.
+
+Configured in `[hub.defaults.exposure]`:
+
+```toml
+[hub.defaults.exposure]
+max_description_chars = 150   # omit or set to null to disable
+```
+
+Set to a lower value (e.g. `80`) for aggressive savings, or omit the key entirely to keep full descriptions.
+
+---
+
+### TR-5: Chunk Usage Tracking
+
+The `scp_budget` built-in tool now returns two additional counters alongside the token budget information:
+
+- `chunks_stored` — total chunks written to the session chunk store since the last reset
+- `chunks_fetched` — total chunks retrieved (via `scp_get_more` or filter delivery)
+
+No configuration required. Example response:
+
+```json
+{
+  "budget_total": 64000,
+  "budget_remaining": 51200,
+  "strategy": "top_k",
+  "chunks_stored": 412,
+  "chunks_fetched": 38
+}
+```
+
+---
+
+### TR-6: Response Field Strip
+
+A per-server list of dot-separated JSON field paths to strip from backend responses **before** the filter pipeline runs. Useful for backends that embed large verbose metadata blocks (e.g. Kubernetes `managedFields`, Docker `Labels`) that are rarely needed by the model.
+
+Paths are removed from every JSON response from that server. Nested paths are supported using dot notation.
+
+Configured per server in `[[servers]]`:
+
+```toml
+[[servers]]
+name = "kubernetes"
+transport = "sse"
+url = "http://kube-mcp:8080/sse"
+response_field_strip = [
+  "metadata.managedFields",
+  "metadata.annotations",
+  "status.conditions",
+]
+```
+
+---
+
+### TR-7: tools/list Hash Cache
+
+A session-scoped hash cache for `tools/list` serialization. After the first `tools/list` request in a session, SCP records a hash of the tool registry state. If the registry has not changed by the time the next `tools/list` arrives in the **same session**, SCP returns the previously serialized response bytes directly — skipping JSON serialization entirely.
+
+This feature is automatic and requires no configuration. The cache is invalidated whenever the tool registry changes (backend reconnect, hot-reload, tool discovery cycle).
+
+---
+
+### TR-8: Schema Deduplication
+
+When multiple backends expose a tool with the same `original_name` **and** identical `inputSchema`, only one copy is included in `tools/list` (the copy from the highest-priority server wins). Duplicate entries are silently filtered from the wire response.
+
+Duplicates remain fully callable via their qualified name (e.g. `servername__toolname`) — deduplication only affects what the model sees in the tool list.
+
+Configured in `[hub.defaults.exposure]`:
+
+```toml
+[hub.defaults.exposure]
+deduplicate_identical_schemas = true
+```
+
+---
+
+### TR-9: Sentence-level Chunking
+
+The filter pipeline's chunk splitter (stage 4) now performs **content-aware splitting**. When the splitter detects prose text — identified by the presence of `. `, `? `, or `! ` patterns — it splits on sentence boundaries instead of paragraph boundaries. This produces finer-grained chunks, improving relevance scoring accuracy and allowing the budget enforcer to deliver more precisely targeted content.
+
+This behaviour is automatic and requires no configuration. Non-prose content (JSON, code, logs) continues to use the existing paragraph/line splitters.
+
+---
+
+### TR-10: Tool Catalog Injection
+
+When enabled, SCP injects a compact Markdown-formatted tool catalog into the `instructions` field of the MCP `initialize` response (sent once per session, at connection time). The catalog lists every tool available in the session with a one-line description, allowing the model to orient itself without issuing a `tools/list` call that would consume token budget.
+
+The injected catalog is intentionally compact: tool names plus truncated descriptions only. Full schemas and descriptions remain available via `tools/list` or `scp_schema`.
+
+Configured in `[hub.defaults.exposure]`:
+
+```toml
+[hub.defaults.exposure]
+inject_tool_catalog = true
+```
+
+---
+
+### Combined Example
+
+A production-hardened configuration combining all exposure-level features:
+
+```toml
+[hub]
+tool_cache_ttl_secs = 300
+
+[hub.defaults.exposure]
+strip_input_schema           = true
+max_description_chars        = 150
+deduplicate_identical_schemas = true
+inject_tool_catalog          = true
+
+[[servers]]
+name = "kubernetes"
+transport = "sse"
+url = "http://kube-mcp:8080/sse"
+response_field_strip = [
+  "metadata.managedFields",
+  "metadata.annotations",
+]
+
+[[servers]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+```
+
+With this configuration a typical session sees:
+
+- `tools/list` payload reduced by ~60–80% (schema stripping + description truncation + deduplication)
+- Kubernetes tool responses stripped of verbose metadata before filtering
+- The model receives a tool catalog at session start with zero token-budget cost
+- Repeated `tools/list` calls within a session served from the in-process hash cache
+
+---
+
 ## Changelog
 
 ### v0.2.0 (2026-05-25)
